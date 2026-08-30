@@ -1,116 +1,196 @@
-import { useEffect, useState } from 'react'
-import './App.css'
-
 /**
- * Phase 0 stub.
+ * The instrument panel.
  *
- * Its only job is to prove the served-bundle path end to end: this file is
- * built by the node stage of the Dockerfile, copied into the python image, and
- * served by the same FastAPI process that answers the fetch below. If this
- * renders "db: ok" at http://localhost:8000, one container really does serve
- * the whole app.
+ * Layout and run identity; everything that moves lives in `useRun`, and
+ * everything the panels read comes through one `DataSource`.
  *
- * The real UI is Phase 3, built against the committed fixtures in
- * src/fixtures/.
+ * **Run identity lives in the URL.** `?sim=<uuid>` names the run, mirrored to
+ * localStorage so a refresh resumes it, and `?source=replay` selects the
+ * recorded fixtures instead. Keying off an explicit id rather than "whatever
+ * the latest run is" is what makes a run a durable artifact: the naive
+ * before-picture recorded in this phase stays viewable at its own URL after
+ * fair drain lands in the next one, so the comparison survives independently of
+ * the toggle working.
  */
+import { useCallback, useMemo, useState } from 'react'
 
-type Health = { status: string; db: string }
-type ProcessRow = {
-  id: string
-  kind: string
-  hostname: string
-  pid: number
-  is_leader: boolean
-  heartbeat_age_s: number
+import './App.css'
+import { LiveSource, createRun, retireRun } from './api/client'
+import { ReplaySource } from './api/replay'
+import type { DataSource } from './api/source'
+import { BacklogChart } from './components/BacklogChart'
+import { ConsumerCards } from './components/ConsumerCards'
+import { ControlBar } from './components/ControlBar'
+import { DecisionFeed } from './components/DecisionFeed'
+import { EmptyState } from './components/EmptyState'
+import { ProcessStrip } from './components/ProcessStrip'
+import { ShareChart } from './components/ShareChart'
+import { useRun } from './hooks/useRun'
+
+const STORAGE_KEY = 'webhook-recovery:sim'
+
+type Target = { kind: 'live'; simId: string } | { kind: 'replay' } | null
+
+function remembered(): string | null {
+  // Private-mode browsers throw on access rather than returning null.
+  try {
+    return localStorage.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
 }
 
-const POLL_INTERVAL_MS = 2000
+function remember(simId: string | null): void {
+  try {
+    if (simId === null) localStorage.removeItem(STORAGE_KEY)
+    else localStorage.setItem(STORAGE_KEY, simId)
+  } catch {
+    /* nothing to do -- the URL is still the source of truth */
+  }
+}
+
+function readTarget(): Target {
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('source') === 'replay') return { kind: 'replay' }
+  const fromUrl = params.get('sim')
+  if (fromUrl) return { kind: 'live', simId: fromUrl }
+  const fromStorage = remembered()
+  return fromStorage ? { kind: 'live', simId: fromStorage } : null
+}
+
+function writeUrl(target: Target): void {
+  const url = new URL(window.location.href)
+  url.searchParams.delete('sim')
+  url.searchParams.delete('source')
+  if (target?.kind === 'live') url.searchParams.set('sim', target.simId)
+  if (target?.kind === 'replay') url.searchParams.set('source', 'replay')
+  window.history.replaceState(null, '', url)
+}
 
 export default function App() {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [processes, setProcesses] = useState<ProcessRow[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [target, setTarget] = useState<Target>(readTarget)
+  // Bumped to build a fresh source, which is how "restart replay" clears the
+  // metrics buffer: `useRun` keys all of its state off source identity, so
+  // there is no separate reset path to keep in step with the polling one.
+  const [generation, setGeneration] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  const source = useMemo<DataSource | null>(() => {
+    if (!target) return null
+    return target.kind === 'replay' ? new ReplaySource() : new LiveSource(target.simId)
+    // `generation` is a deliberate cache-buster rather than an input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, generation])
 
-    async function poll() {
-      try {
-        const [healthRes, processRes] = await Promise.all([
-          fetch('/api/health'),
-          fetch('/api/process'),
-        ])
-        if (!healthRes.ok) throw new Error(`/api/health returned ${healthRes.status}`)
-        if (!processRes.ok) throw new Error(`/api/process returned ${processRes.status}`)
-        const nextHealth: Health = await healthRes.json()
-        const nextProcesses: ProcessRow[] = await processRes.json()
-        if (cancelled) return
-        setHealth(nextHealth)
-        setProcesses(nextProcesses)
-        setError(null)
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
-      }
-    }
+  const run = useRun(source)
 
-    void poll()
-    const timer = setInterval(() => void poll(), POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
+  const go = useCallback((next: Target) => {
+    writeUrl(next)
+    remember(next?.kind === 'live' ? next.simId : null)
+    setTarget(next)
+    setActionError(null)
   }, [])
 
+  const start = useCallback(async () => {
+    setBusy(true)
+    setActionError(null)
+    try {
+      const created = await createRun()
+      go({ kind: 'live', simId: created.id })
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [go])
+
+  const reset = useCallback(async () => {
+    if (source instanceof ReplaySource) {
+      setGeneration((n) => n + 1)
+      return
+    }
+    setBusy(true)
+    setActionError(null)
+    try {
+      // Retire before creating. The producer feeds every `running` simulation,
+      // so a run left running is not merely clutter -- it goes on consuming the
+      // provider's global attempt budget and distorting the next run's chart.
+      if (target?.kind === 'live') {
+        try {
+          await retireRun(target.simId)
+        } catch {
+          /* already gone, or never existed -- either way, on to the new one */
+        }
+      }
+      const created = await createRun()
+      go({ kind: 'live', simId: created.id })
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [go, source, target])
+
+  const replay = useCallback(() => go({ kind: 'replay' }), [go])
+
+  // No run selected, or one that could not be loaded -- a remembered id whose
+  // simulation is gone lands here too, with the reason shown.
+  if (!source || (run.loading && run.error)) {
+    return (
+      <main className="app">
+        <EmptyState
+          onStart={() => void start()}
+          onReplay={replay}
+          busy={busy}
+          error={actionError ?? (source ? run.error : null)}
+        />
+      </main>
+    )
+  }
+
+  if (!run.simulation) {
+    return (
+      <main className="app">
+        <p className="caption">Loading run…</p>
+      </main>
+    )
+  }
+
   return (
-    <main className="stub">
-      <h1>webhook-recovery</h1>
-      <p className="subtitle">Phase 0 skeleton — no business logic yet.</p>
-
-      <section>
-        <h2>API</h2>
-        {error && <p className="error">{error}</p>}
-        {health ? (
-          <dl>
-            <dt>status</dt>
-            <dd>{health.status}</dd>
-            <dt>db</dt>
-            <dd className={health.db === 'ok' ? 'ok' : 'error'}>{health.db}</dd>
-          </dl>
+    <main className="app">
+      <div className="titlebar">
+        <h1>webhook-recovery</h1>
+        <span className={`chip source-${source.kind}`}>
+          {source.kind === 'replay' ? 'recorded run' : 'live'}
+        </span>
+        {source.kind === 'replay' ? (
+          <button type="button" className="link" onClick={() => void start()} disabled={busy}>
+            start a live run
+          </button>
         ) : (
-          !error && <p>checking…</p>
+          <button type="button" className="link" onClick={replay}>
+            view the recorded run
+          </button>
         )}
-      </section>
+      </div>
 
-      <section>
-        <h2>Live processes ({processes.length})</h2>
-        {processes.length === 0 ? (
-          <p>none heartbeating inside the 15s liveness window.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>kind</th>
-                <th>host</th>
-                <th>pid</th>
-                <th>heartbeat</th>
-              </tr>
-            </thead>
-            <tbody>
-              {processes.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    {p.kind}
-                    {p.is_leader && <span className="badge">leader</span>}
-                  </td>
-                  <td>{p.hostname}</td>
-                  <td>{p.pid}</td>
-                  <td>{p.heartbeat_age_s.toFixed(1)}s ago</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      <ControlBar
+        simulation={run.simulation}
+        virtualNowS={run.virtualNowS}
+        sourceKind={source.kind}
+        busy={busy}
+        onPatch={(body) => void run.patch(body)}
+        onReset={() => void reset()}
+      />
+
+      {(actionError ?? run.error) && <p className="error">{actionError ?? run.error}</p>}
+
+      <BacklogChart buckets={run.buckets} consumers={run.consumerRefs} />
+      <ShareChart buckets={run.buckets} consumers={run.consumerRefs} />
+      <ConsumerCards consumers={run.consumers} refs={run.consumerRefs} buckets={run.buckets} />
+      <DecisionFeed decisions={run.decisions} sourceKind={source.kind} />
+      <ProcessStrip processes={run.processes} sourceKind={source.kind} />
     </main>
   )
 }
