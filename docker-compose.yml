@@ -52,19 +52,31 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Serves the API *and* the built SPA, from one process on one port. The bundle
+  # is baked into the image by the Dockerfile's node stage, so there is nothing
+  # to mount and no second origin -- http://localhost:8000 is the whole product.
+  # For a hot-reloading frontend loop, run `make web` alongside this: Vite on
+  # :5173 proxies /api straight back here.
   api:
     <<: *app
     command:
       ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "${API_HOST_PORT:-8000}:8000"
+    # Probes the SPA as well as the API, because "one container serves the whole
+    # product" is a claim worth checking rather than assuming. app/api/main.py
+    # deliberately degrades to API-only when it finds no bundle -- it logs and
+    # carries on -- which is right for a stray `uvicorn` invocation but is a
+    # broken image here. Without the second request that failure is invisible:
+    # every /api route answers, the container reports healthy, and the only
+    # symptom is a 404 at the root. urlopen raises on 404, so it fails loudly.
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)",
+          "import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8000/api/health').status==200 and u.urlopen('http://localhost:8000/').status==200 else 1)",
         ]
       interval: 5s
       timeout: 3s
