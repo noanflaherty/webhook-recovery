@@ -26,7 +26,7 @@ import json
 import random
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +41,7 @@ from app.api.schemas import (
     ProcessRead,
     SimulationRead,
 )
-from app.core.clock import VIRTUAL_EPOCH_ZERO, wall_now
+from app.core.clock import VIRTUAL_EPOCH_ZERO
 from app.core.enums import DeliveryState, ProcessKind, SimStatus
 from app.core.scenario import (
     OUTAGE_ENDS_AT_S,
@@ -61,6 +61,12 @@ RUN_LENGTH_S = 640
 BUCKET_S = 1
 
 SIMULATION_ID = uuid.UUID("11111111-2222-4333-8444-555555555555")
+
+#: A fixed wall reference, not the real clock. Everything in these fixtures has
+#: to be reproducible or `make fixtures-check` can never pass and the committed
+#: JSON churns on every run -- the *_wall timestamps are display-only here, so
+#: pinning them costs nothing and buys a meaningful staleness check.
+FIXTURE_WALL = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 #: Set *below* the sum of per-consumer rate caps (3 x 20), so the provider is
@@ -344,13 +350,13 @@ def build_simulation() -> SimulationRead:
         virtual_now=VIRTUAL_EPOCH_ZERO + timedelta(seconds=virtual_now_s),
         virtual_now_s=virtual_now_s,
         phase=phase_at(virtual_now_s),
-        created_at_wall=wall_now(),
+        created_at_wall=FIXTURE_WALL,
     )
 
 
 def build_processes(rng: random.Random) -> list[ProcessRead]:
     """One conductor and three workers, as compose runs them."""
-    started = wall_now() - timedelta(seconds=90)
+    started = FIXTURE_WALL - timedelta(seconds=90)
     rows: list[ProcessRead] = [
         ProcessRead(
             id=uuid.UUID(int=0xC0DE0001),
