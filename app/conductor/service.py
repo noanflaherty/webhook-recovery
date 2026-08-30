@@ -15,19 +15,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Row, select
+from sqlalchemy import Row, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.conductor.admission import compute_budget, mark_ready, select_candidates
 from app.conductor.leader import LeaderLock
-from app.conductor.metrics import MetricsWriter
+from app.conductor.metrics import MetricsWriter, read_gauges, total_backlog
 from app.core.clock import SimulationClockConfig, VirtualClock
 from app.core.enums import SimStatus
 from app.core.models import Simulation
 from app.core.runner import ProcessRunner
-from app.core.scenario import is_outage
+from app.core.scenario import is_finished, is_outage
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,24 @@ class Conductor:
         if self._runner is not None:
             self._runner.mark_leader(value)
 
+    async def _retire(self, conn: AsyncConnection, simulation_id: uuid.UUID, now: datetime) -> None:
+        """Mark a drained run ``done`` and freeze its clock.
+
+        Not housekeeping. A pass covers *every* running simulation, so one that
+        nobody retires goes on costing conductor throughput forever -- and the
+        cost lands on whichever run a reviewer is currently watching. Every visit
+        to the deployment leaves another one behind.
+
+        Freezing the clock alongside the status mirrors what ``PATCH`` does for
+        a manual finish, so the final numbers stop moving either way.
+        """
+        log.info("simulation %s finished at virtual %s", simulation_id, now)
+        await conn.execute(
+            update(Simulation)
+            .where(Simulation.id == simulation_id)
+            .values(status=SimStatus.DONE.value, paused_at_virtual=now)
+        )
+
     async def _running_simulations(self, conn: AsyncConnection) -> list[Row[Any]]:
         result = await conn.execute(select(*_SIM_COLUMNS).where(Simulation.status == SimStatus.RUNNING.value))
         return list(result)
@@ -107,10 +126,18 @@ class Conductor:
         now = clock.now()
         elapsed = clock.elapsed_virtual_s()
 
+        # One read, used twice: as the three gauges in the metric buckets, and
+        # as the answer to "is there anything left to do?".
+        gauges = await read_gauges(conn, sim.id)
+
         # Written before the outage check, deliberately: an outage is a period
         # with no attempts, not a period with no data, and a chart that goes
         # blank for five virtual minutes is not showing the backlog climbing.
-        await self._metrics.write(conn, sim.id, now)
+        await self._metrics.write(conn, sim.id, now, gauges)
+
+        if is_finished(elapsed, total_backlog(gauges)):
+            await self._retire(conn, sim.id, now)
+            return
 
         if is_outage(elapsed, outage_override=sim.outage_override):
             # The delivery pipeline is down. Events keep landing in the ledger

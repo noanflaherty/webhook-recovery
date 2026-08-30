@@ -27,19 +27,27 @@ the toggle is measured against.
 | **Built** | ingest + fan-out, the producer, admission control with the outage gate, derived metric buckets, leader election, `SKIP LOCKED` claim, the full attempt state machine (deliver / retry / fail), consumer seeding |
 | **Deliberately absent** | weights and per-consumer shares, `max_staleness` → `expired`, coalescing → `superseded`, the fair-drain toggle, charts, lease reaping |
 
-One 45-second run at 20×, from `scripts/verify.sh`:
+One run, backlog (`b`) and delivered (`d`) per consumer, at 20× — about 60 real seconds end to end:
 
 ```
-t=411s outage     Acme b=1757 d=716   Bolt b=1757 d=716   Clover b=234 d=93
-t=512s recovery   Acme b=1308 d=1776  Bolt b=1309 d=1775  Clover b=171 d=234
-t=614s recovery   Acme b=758  d=2946  Bolt b=758  d=2946  Clover b=104 d=385
-t=715s recovery   Acme b=215  d=4104  Bolt b=215  d=4104  Clover b=30  d=541
-t=816s recovery   Acme b=0    d=4917  Bolt b=0    d=4917  Clover b=0   d=647
+t=  50s normal     Acme b=14   d=287   Bolt b=14   d=287   Clover b=2   d=39
+t= 171s outage     Acme b=305  d=726   Bolt b=305  d=726   Clover b=43  d=97
+t= 292s outage     Acme b=1034 d=726   Bolt b=1034 d=726   Clover b=141 d=97
+t= 413s outage     Acme b=1751 d=726   Bolt b=1751 d=726   Clover b=235 d=97
+t= 535s recovery   Acme b=1276 d=1940  Bolt b=1277 d=1939  Clover b=168 d=262
+t= 656s recovery   Acme b=756  d=3204  Bolt b=756  d=3204  Clover b=99  d=429
+t= 777s recovery   Acme b=204  d=4474  Bolt b=204  d=4474  Clover b=26  d=593
+t= 899s recovery   Acme b=13   d=5408  Bolt b=13   d=5408  Clover b=2   d=719
+t=1020s done       Acme b=0    d=5421  Bolt b=0    d=5421  Clover b=0   d=721
 ```
+
+Deliveries stop entirely between 2:00 and 7:00 while events keep landing in the ledger — that is the one
+`if` in the conductor pass, and it is what gives the rest of the project something to burn down. The
+producer stops at 900 virtual seconds; the backlog reaches a stable zero and the run retires itself.
 
 Acme and Bolt track each other exactly, because they subscribe to the same four event types and nothing
-yet distinguishes them. Phase 2's policies are what pull those two lines apart — which is the point of
-running the baseline first.
+yet distinguishes them. Phase 2's policies are what pull those two lines apart — which is precisely why
+the baseline is worth running first.
 
 ## Run it
 
@@ -229,6 +237,10 @@ the shape genuinely changed.
 - **Consumer seeding moved from Phase 3 to here.** Not a choice — fan-out reads `subscription`, so a
   simulation with no consumers accepts events and delivers them to nobody. Policies came along for free
   and sit unread until Phase 2 evaluates them.
+- **Finished runs retire themselves.** A conductor pass covers *every* running simulation, so one that
+  nobody retires goes on costing throughput forever — and the cost lands on whichever run a reviewer is
+  currently watching. Every visit to the deployment leaves another one behind, so it compounds. Also
+  deployment-only: see below.
 - **The transport is finished, not stubbed.** `SimulatedTransport` handles latency, jitter, failure
   rates and a `down` flag, and the worker handles every outcome — deliver, retry with backoff, fail at
   the cap. Seeded consumers have `sim_failure_rate = 0.0`, so Phase 1 still *observes* "always 200"; the
@@ -305,11 +317,27 @@ race the one-shot step exists to prevent. Running it in the api's start command 
 single replica — keeps the guarantee that migrations run once from one place, and has the side benefit
 of being platform-independent rather than a Railway feature.
 
-### What deploying the skeleton actually caught
+### What deploying actually caught
 
-All four were invisible locally, and none of them would have been distinguishable from a *business
-logic* bug had they surfaced in Phase 2. This is the entire argument for deploying before there is
-anything interesting to deploy.
+None of these would have been distinguishable from a *business logic* bug had they surfaced in Phase 2.
+This is the entire argument for deploying before there is anything interesting to deploy.
+
+**Phase 1: abandoned simulations starve the live one.** Locally there is one simulation and everything
+drains in 45 seconds. On the deployment, every `verify.sh` run and every reviewer visit leaves a
+`running` simulation behind — and the conductor schedules *all* of them in a single pass, so each one
+divides the admission throughput. It presented as a backlog that tracked its arrival rate exactly and
+never drained: 12.4 attempts/virtual second against a budget of 30, with the ready buffer pinned at 4 of
+its 36-slot target. That reads like a broken scheduler, and it is not — it is the admission-ceiling
+invariant, arrived at from an unexpected direction.
+
+The fix is the `done` transition the phase plan had put in Phase 3: a run retires once the script has
+ended and its backlog is zero, plus a virtual-time backstop for a run that will never drain. Both terms
+of that condition are load-bearing — retiring on an empty backlog alone *races the producer*, which at
+20× commits another ~20 deliveries in the time one pass takes, so the run freezes with a small residue
+that looks exactly like a failure to drain. So the producer stops at the end of the script, and only
+then is the zero stable.
+
+**Phase 0, all four invisible locally:**
 
 | Problem | How it presented | Fix |
 |---|---|---|

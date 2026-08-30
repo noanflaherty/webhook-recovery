@@ -60,6 +60,51 @@ def phase_at(virtual_s: float, *, outage_override: bool | None = None, done: boo
     return PHASE_RECOVERY
 
 
+#: The end of the scripted run: ~45 real seconds at 20x. The producer stops
+#: emitting here, which is what lets the backlog reach a *stable* zero -- and
+#: only then does "the run is finished" mean anything. It is set comfortably
+#: after the recovery drain completes (~830 virtual s in practice), so a
+#: reviewer watches the backlog reach zero while traffic is still arriving,
+#: which is the convincing version of catching up.
+SCENARIO_ENDS_AT_S: Final = 900.0
+
+#: A backstop, not the normal way a run ends. It only ever catches a run that
+#: stopped draining -- one whose consumer was left `down`, say.
+SCENARIO_MAX_VIRTUAL_S: Final = 1800.0
+
+
+def is_producing(virtual_s: float) -> bool:
+    """Whether the provider is still emitting events.
+
+    The producer runs straight through the outage -- that is the whole point,
+    the provider keeps emitting and only *delivery* is down -- and stops at the
+    end of the script.
+    """
+    return virtual_s < SCENARIO_ENDS_AT_S
+
+
+def is_finished(virtual_s: float, backlog: int) -> bool:
+    """Whether a run is over: the script has ended and nothing is left to deliver.
+
+    This exists because **the conductor works on every running simulation in a
+    single pass**, so a simulation nobody retires keeps costing throughput
+    forever -- and the cost is paid by whichever run a reviewer is actually
+    watching. Every visit to the deployment leaves one behind, so it compounds.
+
+    Invisible locally, where there is one simulation. On the deployment it
+    presented as a backlog that tracked its arrival rate and never drained,
+    which reads exactly like a broken scheduler.
+
+    Both terms are load-bearing. Retiring on an empty backlog alone races the
+    producer -- at 20x it commits another ~20 deliveries in the time a pass
+    takes, so the run freezes with a small residue that looks like a failure to
+    drain. Waiting for the script to end first means the zero is stable.
+    """
+    if virtual_s >= SCENARIO_MAX_VIRTUAL_S:
+        return True
+    return not is_producing(virtual_s) and backlog == 0
+
+
 def is_outage(virtual_s: float, *, outage_override: bool | None = None) -> bool:
     """Whether the delivery pipeline is down.
 
@@ -255,11 +300,15 @@ __all__ = [
     "PHASE_NORMAL",
     "PHASE_OUTAGE",
     "PHASE_RECOVERY",
+    "SCENARIO_ENDS_AT_S",
+    "SCENARIO_MAX_VIRTUAL_S",
     "ConsumerSpec",
     "EventTypeSpec",
     "PolicySpec",
     "entity_key",
+    "is_finished",
     "is_outage",
+    "is_producing",
     "payload_for",
     "phase_at",
     "seed_simulation",

@@ -85,6 +85,37 @@ def _bucket_of(column: SQLColumnExpression[Any], bucket_s: float) -> ColumnEleme
     return cast(func.floor(seconds / bucket_s), Integer)
 
 
+#: Per consumer, per active state. Read once per pass and used twice: written
+#: into the buckets as the three gauges, and summed to decide whether the run has
+#: anything left to do.
+Gauges = dict[int, dict[str, int]]
+
+
+async def read_gauges(conn: AsyncConnection, simulation_id: uuid.UUID) -> Gauges:
+    """Point-in-time queue depths -- the one thing here that genuinely is a sample.
+
+    Same grouping as ``GET /api/consumer``'s counters, deliberately: the card and
+    the chart must not disagree about the same number.
+    """
+    result = await conn.execute(
+        select(Delivery.consumer_id, Delivery.state, func.count())
+        .where(
+            Delivery.simulation_id == simulation_id,
+            Delivery.state.in_([s.value for s in ACTIVE_DELIVERY_STATES]),
+        )
+        .group_by(Delivery.consumer_id, Delivery.state)
+    )
+    out: Gauges = defaultdict(dict)
+    for consumer_id, state, count in result:
+        out[consumer_id][state] = count
+    return out
+
+
+def total_backlog(gauges: Gauges) -> int:
+    """Everything still on its way somewhere, across every consumer."""
+    return sum(count for states in gauges.values() for count in states.values())
+
+
 class MetricsWriter:
     """Writes complete buckets, backfilling any the last leader missed."""
 
@@ -103,6 +134,7 @@ class MetricsWriter:
         conn: AsyncConnection,
         simulation_id: uuid.UUID,
         now: datetime,
+        gauges: Gauges,
     ) -> None:
         settings = get_settings()
         bucket_s = settings.metrics_bucket_virtual_s
@@ -129,7 +161,6 @@ class MetricsWriter:
 
         attempts = await self._attempts(conn, simulation_id, bucket_s, window_from, window_to)
         terminals = await self._terminals(conn, simulation_id, bucket_s, window_from, window_to)
-        gauges = await self._gauges(conn, simulation_id)
 
         rows = []
         for consumer_id in consumer_ids:
@@ -273,4 +304,4 @@ class MetricsWriter:
         )
 
 
-__all__ = ["MetricsWriter", "bucket_index"]
+__all__ = ["Gauges", "MetricsWriter", "bucket_index", "read_gauges", "total_backlog"]

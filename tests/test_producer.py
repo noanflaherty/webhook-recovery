@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.producer import Producer, _draw, _SimulationState
-from app.core.clock import VIRTUAL_EPOCH_ZERO
+from app.core.clock import VIRTUAL_EPOCH_ZERO, wall_now
 from app.core.models import Delivery, Event
 from app.core.scenario import EVENT_MIX, seed_simulation
 from tests.conftest import a_simulation, requires_db
@@ -78,8 +78,16 @@ def test_pooled_types_repeat_their_keys_and_unique_types_do_not() -> None:
 
 
 async def test_a_tick_ledgers_and_fans_out(session: AsyncSession) -> None:
-    """End to end through the real ingest path, not a mock of it."""
-    sim = a_simulation(speed_multiplier=20.0)
+    """End to end through the real ingest path, not a mock of it.
+
+    The wall reference is backdated so the tick covers a *known* virtual window.
+    Left at "now", the window is however long the fixture setup happened to
+    take, which at 20x is the difference between ~68 events and zero.
+    """
+    sim = a_simulation(
+        speed_multiplier=20.0,
+        resumed_at_wall=wall_now() - timedelta(seconds=0.5),  # = 10 virtual seconds
+    )
     session.add(sim)
     await session.flush()
     await seed_simulation(session, sim.id)
@@ -138,3 +146,46 @@ async def test_a_paused_simulation_emits_nothing(session: AsyncSession) -> None:
         select(func.count()).select_from(Event).where(Event.simulation_id == sim.id)
     )
     assert events == 0
+
+
+async def test_the_producer_stops_at_the_end_of_the_script(session: AsyncSession) -> None:
+    """It runs straight through the outage, and stops when the run is over.
+
+    Running through the outage is the whole point -- the provider keeps emitting
+    and only *delivery* is down. Stopping at the end is what lets the backlog
+    reach a **stable** zero, which is what the conductor waits for before
+    retiring the run. Without it, "drained" races the next tick forever.
+    """
+    from app.core.scenario import SCENARIO_ENDS_AT_S
+
+    sim = a_simulation()
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=SCENARIO_ENDS_AT_S + 1)
+    session.add(sim)
+    await session.flush()
+    await seed_simulation(session, sim.id)
+
+    await Producer()._emit_for(session, sim)
+
+    events = await session.scalar(
+        select(func.count()).select_from(Event).where(Event.simulation_id == sim.id)
+    )
+    assert events == 0
+
+
+async def test_the_producer_runs_through_the_outage(session: AsyncSession) -> None:
+    """The counterpart. A producer that paused during the outage would mean the
+    backlog never climbs, and there would be nothing to burn down."""
+    from app.core.scenario import OUTAGE_STARTS_AT_S
+
+    sim = a_simulation()
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=OUTAGE_STARTS_AT_S + 60)
+    session.add(sim)
+    await session.flush()
+    await seed_simulation(session, sim.id)
+
+    await Producer()._emit_for(session, sim)
+
+    events = await session.scalar(
+        select(func.count()).select_from(Event).where(Event.simulation_id == sim.id)
+    )
+    assert events is not None and events > 0

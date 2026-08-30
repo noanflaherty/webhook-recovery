@@ -28,7 +28,7 @@ from app.core.clock import VIRTUAL_EPOCH_ZERO, SimulationClockConfig, VirtualClo
 from app.core.db import session_scope
 from app.core.enums import SimStatus
 from app.core.models import Event, Simulation
-from app.core.scenario import EVENT_MIX, EventTypeSpec, entity_key, payload_for
+from app.core.scenario import EVENT_MIX, EventTypeSpec, entity_key, is_producing, payload_for
 from app.core.settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,11 @@ class Producer:
         if clock.is_paused:
             return
         now = clock.now()
+        if not is_producing(clock.to_virtual_seconds(now)):
+            # The script is over. Stopping here is what lets the backlog reach a
+            # *stable* zero, which is what the conductor waits for before
+            # retiring the run -- otherwise "drained" races the next tick.
+            return
 
         state = self._state.get(sim.id)
         if state is None:

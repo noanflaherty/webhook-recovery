@@ -19,9 +19,14 @@ from app.api.ingest import EventSpec, ingest_events
 from app.conductor.admission import compute_budget, mark_ready, select_candidates
 from app.conductor.service import _SIM_COLUMNS, Conductor
 from app.core.clock import VIRTUAL_EPOCH_ZERO
-from app.core.enums import DeliveryState
+from app.core.enums import DeliveryState, SimStatus
 from app.core.models import Attempt, Delivery, Simulation
-from app.core.scenario import OUTAGE_STARTS_AT_S, seed_simulation
+from app.core.scenario import (
+    OUTAGE_STARTS_AT_S,
+    SCENARIO_ENDS_AT_S,
+    SCENARIO_MAX_VIRTUAL_S,
+    seed_simulation,
+)
 from app.core.settings import get_settings
 from tests.conftest import a_simulation, requires_db
 
@@ -229,3 +234,97 @@ async def test_work_that_is_not_due_yet_is_left_alone(
 
     now = VIRTUAL_EPOCH_ZERO + timedelta(seconds=10)
     assert await select_candidates(connection, sim.id, now, limit=10) == []
+
+
+async def test_a_drained_run_is_retired(session: AsyncSession, connection: AsyncConnection) -> None:
+    """A finished simulation stops costing the conductor anything.
+
+    A pass covers *every* running simulation, so one that nobody retires goes on
+    consuming throughput forever -- and the cost lands on whichever run a
+    reviewer is currently watching. Invisible locally, where there is one
+    simulation; on a shared deployment it compounds with every visit and
+    presents as a backlog that tracks its arrival rate and never drains.
+    """
+    sim = a_simulation()
+    session.add(sim)
+    await session.flush()
+    await seed_simulation(session, sim.id)
+    # Past the end of the script, with nothing left to deliver.
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=SCENARIO_ENDS_AT_S + 30)
+    await session.flush()
+
+    conductor = Conductor()
+    await conductor._pass(connection, await _sim_row(connection, sim.id))
+
+    status = await connection.scalar(select(Simulation.status).where(Simulation.id == sim.id))
+    assert status == SimStatus.DONE.value
+
+
+async def test_a_run_with_work_left_is_not_retired(
+    session: AsyncSession, connection: AsyncConnection
+) -> None:
+    """Backlog outranks the clock -- a run still draining is not finished."""
+    sim = await _backlog(session, count=50)
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=SCENARIO_ENDS_AT_S + 30)
+    await session.flush()
+
+    conductor = Conductor()
+    await conductor._pass(connection, await _sim_row(connection, sim.id))
+
+    status = await connection.scalar(select(Simulation.status).where(Simulation.id == sim.id))
+    assert status == SimStatus.RUNNING.value
+
+
+async def test_an_empty_backlog_mid_run_is_not_finished(
+    session: AsyncSession, connection: AsyncConnection
+) -> None:
+    """A fresh simulation has nothing queued, and must not be retired on the spot.
+
+    This is the case that makes `is_finished` more than "backlog == 0": while the
+    producer is still emitting, an empty backlog means the pipeline is keeping
+    up, which is the system working rather than the run being over. Retiring on
+    an empty backlog alone also *races* the producer, which at 20x commits
+    another ~20 deliveries in the time one pass takes -- so the run would freeze
+    with a residue that looks like a failure to drain.
+    """
+    sim = a_simulation()
+    session.add(sim)
+    await session.flush()
+    await seed_simulation(session, sim.id)
+
+    conductor = Conductor()
+    await conductor._pass(connection, await _sim_row(connection, sim.id))
+
+    status = await connection.scalar(select(Simulation.status).where(Simulation.id == sim.id))
+    assert status == SimStatus.RUNNING.value
+
+
+async def test_a_stuck_run_is_retired_on_the_virtual_time_backstop(
+    session: AsyncSession, connection: AsyncConnection
+) -> None:
+    """A run that will never drain still has to stop consuming the conductor."""
+    sim = await _backlog(session, count=50)
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=SCENARIO_MAX_VIRTUAL_S + 1)
+    await session.flush()
+
+    conductor = Conductor()
+    await conductor._pass(connection, await _sim_row(connection, sim.id))
+
+    status = await connection.scalar(select(Simulation.status).where(Simulation.id == sim.id))
+    assert status == SimStatus.DONE.value
+
+
+async def test_a_retired_run_freezes_its_clock(session: AsyncSession, connection: AsyncConnection) -> None:
+    """Mirrors what PATCH does for a manual finish, so final numbers stop moving."""
+    sim = a_simulation()
+    session.add(sim)
+    await session.flush()
+    await seed_simulation(session, sim.id)
+    sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=SCENARIO_ENDS_AT_S + 30)
+    await session.flush()
+
+    conductor = Conductor()
+    await conductor._pass(connection, await _sim_row(connection, sim.id))
+
+    frozen = await connection.scalar(select(Simulation.paused_at_virtual).where(Simulation.id == sim.id))
+    assert frozen is not None

@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.api.ingest import EventSpec, ingest_events
-from app.conductor.metrics import MetricsWriter, bucket_index
+from app.conductor.metrics import MetricsWriter, bucket_index, read_gauges
 from app.core.clock import VIRTUAL_EPOCH_ZERO, SimulationClockConfig, set_speed
 from app.core.enums import AttemptOutcome, DeliveryState
 from app.core.models import Attempt, Consumer, Delivery, MetricsSnapshot, Simulation
@@ -96,7 +96,7 @@ async def test_buckets_are_contiguous_and_cover_every_consumer(
     sim = await _seeded(session)
     now = VIRTUAL_EPOCH_ZERO + timedelta(seconds=10)
 
-    await MetricsWriter().write(connection, sim.id, now)
+    await MetricsWriter().write(connection, sim.id, now, await read_gauges(connection, sim.id))
 
     rows = await _buckets(connection, sim.id)
     written = sorted({row["bucket_virtual_s"] for row in rows})
@@ -118,7 +118,9 @@ async def test_per_bucket_attempts_sum_to_the_total(
     offsets = [0.5, 1.5, 1.7, 3.2, 3.9, 7.9]
     await _attempts_at(session, sim, offsets)
 
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     assert sum(row["attempts"] for row in rows) == len(offsets)
@@ -135,8 +137,12 @@ async def test_a_second_pass_continues_rather_than_repeating(
     await _attempts_at(session, sim, [0.5, 4.5, 11.5, 12.5])
     writer = MetricsWriter()
 
-    await writer.write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10))
-    await writer.write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=20))
+    await writer.write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10), await read_gauges(connection, sim.id)
+    )
+    await writer.write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=20), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     written = sorted({row["bucket_virtual_s"] for row in rows})
@@ -159,10 +165,14 @@ async def test_a_new_leader_backfills_the_gap_it_inherited(
     await _attempts_at(session, sim, [1.5, 12.5, 25.5])
 
     # The old leader gets as far as bucket 8, then its process ends.
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10), await read_gauges(connection, sim.id)
+    )
 
     # A different process, with no memory of any of that.
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=30))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=30), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     written = sorted({row["bucket_virtual_s"] for row in rows})
@@ -179,7 +189,9 @@ async def test_backfill_is_capped_per_pass(
     monkeypatch.setattr(get_settings(), "metrics_max_backfill_buckets", 10)
 
     sim = await _seeded(session)
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=100))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=100), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     written = sorted({row["bucket_virtual_s"] for row in rows})
@@ -193,7 +205,9 @@ async def test_gauges_use_the_same_backlog_definition_as_the_consumer_cards(
     sim = await _seeded(session)
     await ingest_events(session, sim, [EventSpec("invoice.paid", f"in_{n}") for n in range(4)])
 
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=5))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=5), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     latest = [row for row in rows if row["bucket_virtual_s"] == max(r["bucket_virtual_s"] for r in rows)]
@@ -214,7 +228,9 @@ async def test_terminal_states_land_in_the_bucket_they_completed_in(
     delivery.completed_at = VIRTUAL_EPOCH_ZERO + timedelta(seconds=6.4)
     await session.flush()
 
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=12))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=12), await read_gauges(connection, sim.id)
+    )
 
     rows = await _buckets(connection, sim.id)
     delivered = {row["bucket_virtual_s"]: row["delivered"] for row in rows if row["delivered"]}
@@ -246,7 +262,9 @@ async def test_a_simulation_with_no_consumers_writes_nothing(
     session.add(sim)
     await session.flush()
 
-    await MetricsWriter().write(connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10))
+    await MetricsWriter().write(
+        connection, sim.id, VIRTUAL_EPOCH_ZERO + timedelta(seconds=10), await read_gauges(connection, sim.id)
+    )
 
     count = await connection.scalar(
         select(func.count()).select_from(MetricsSnapshot).where(MetricsSnapshot.simulation_id == sim.id)
