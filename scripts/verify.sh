@@ -10,7 +10,12 @@
 set -uo pipefail
 
 BASE="${1:-http://localhost:8000}"
-EXPECTED_PROCESSES="${EXPECTED_PROCESSES:-5}"
+# Per-kind, because a single total cannot distinguish "a worker is missing"
+# from "a conductor is missing", and because the two topologies genuinely
+# differ: compose runs 2 conductors + 3 workers, Railway runs 2 + 2 (the free
+# tier caps replicas at 2). Keep these in step with .railway/railway.ts.
+EXPECTED_CONDUCTORS="${EXPECTED_CONDUCTORS:-2}"
+EXPECTED_WORKERS="${EXPECTED_WORKERS:-3}"
 failures=0
 
 pass() { printf '   \033[32mOK\033[0m  %s\n' "$1"; }
@@ -37,11 +42,21 @@ for p in rows:
     print("   %-9s %-14s pid %-5s %5.1fs ago%s"
           % (p["kind"], p["hostname"], p["pid"], p["heartbeat_age_s"], leader))
 '
-N=$(printf '%s' "$PROCS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')
-if [ "$N" -eq "$EXPECTED_PROCESSES" ]; then
-  pass "$N live (2 conductors + $((EXPECTED_PROCESSES - 2)) workers)"
+COUNTS=$(printf '%s' "$PROCS" | python3 -c '
+import sys, json, collections
+c = collections.Counter(p["kind"] for p in json.load(sys.stdin))
+print(c.get("conductor", 0), c.get("worker", 0))
+')
+LIVE_CONDUCTORS=$(printf '%s' "$COUNTS" | cut -d" " -f1)
+LIVE_WORKERS=$(printf '%s' "$COUNTS" | cut -d" " -f2)
+
+# Report what came back, and name the kind that is short. The previous version
+# derived its label from the expected total, so it printed a breakdown that
+# contradicted the rows listed immediately above it.
+if [ "$LIVE_CONDUCTORS" -eq "$EXPECTED_CONDUCTORS" ] && [ "$LIVE_WORKERS" -eq "$EXPECTED_WORKERS" ]; then
+  pass "$LIVE_CONDUCTORS conductors + $LIVE_WORKERS workers live"
 else
-  fail "expected $EXPECTED_PROCESSES live processes, got $N"
+  fail "expected $EXPECTED_CONDUCTORS conductors + $EXPECTED_WORKERS workers, got $LIVE_CONDUCTORS + $LIVE_WORKERS"
 fi
 
 # Exactly one, not at-least-one. Two leaders means two conductors are both

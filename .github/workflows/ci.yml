@@ -209,4 +209,9 @@ jobs:
       # verification used locally, pointed at the public URL.
       - name: Verify the deployment
         if: vars.RAILWAY_PUBLIC_URL != ''
-        run: EXPECTED_PROCESSES=3 ./scripts/verify.sh "${{ vars.RAILWAY_PUBLIC_URL }}"
+        # Deployed replica counts, which differ from compose: Railway's free
+        # tier caps a service at 2. These mirror .railway/railway.ts -- change
+        # them together, or this step fails on a deployment that is fine.
+        run: |
+          EXPECTED_CONDUCTORS=2 EXPECTED_WORKERS=2 \
+            ./scripts/verify.sh "${{ vars.RAILWAY_PUBLIC_URL }}"
