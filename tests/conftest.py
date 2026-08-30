@@ -12,15 +12,22 @@ share one migrated database and never see each other's rows.
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.core.models import Base
+from app.core.clock import start_config, wall_now
+from app.core.models import Base, Simulation
 from app.core.settings import normalize_database_url
+
+#: Marks simulations created by the test suite. Distinct from anything the
+#: product writes, so a sweep can never take a real row with it.
+FIXTURE_SCENARIO = "pytest-fixture"
 
 #: Defaults to the compose postgres. Safe to share with development data:
 #: every test runs inside a transaction that is rolled back.
@@ -90,3 +97,57 @@ async def session(connection: AsyncConnection) -> AsyncIterator[AsyncSession]:
     )
     async with maker() as s:
         yield s
+
+
+@pytest_asyncio.fixture
+async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
+    """The api, served in-process against the rolled-back session.
+
+    The dependency override is what makes it share the fixture's transaction:
+    without it the routes would open their own connections, commit for real, and
+    leave rows behind for the next test to trip over.
+    """
+    from app.api.main import create_app
+    from app.core import db
+
+    app = create_app()
+
+    async def _session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app.dependency_overrides[db.get_session] = _session
+    transport = ASGITransport(app=app)
+    # No lifespan: it would start the producer, which emits into every running
+    # simulation and would make every count in every test a moving target.
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+def a_simulation(**overrides: object) -> Simulation:
+    """A running simulation at virtual time zero.
+
+    ``speed_multiplier=1.0`` unless overridden: tests assert on virtual
+    timestamps, and at 20x a test that takes 50ms of wall time has moved a
+    virtual second, which turns an exact assertion into a flaky one.
+
+    The scenario name is :data:`FIXTURE_SCENARIO` so that the one test file that
+    genuinely commits -- ``test_claim.py``, which needs rows two transactions can
+    both see -- can find and sweep its own strays after an interrupted run.
+    """
+    config = start_config(1.0)
+    fields: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "created_at_wall": wall_now(),
+        "scenario_name": FIXTURE_SCENARIO,
+        "status": config.status.value,
+        "virtual_epoch": config.virtual_epoch,
+        "resumed_at_wall": config.resumed_at_wall,
+        "paused_at_virtual": None,
+        "speed_multiplier": config.speed_multiplier,
+        "fair_drain_enabled": True,
+        "global_attempts_per_s": 30.0,
+        "outage_override": None,
+    }
+    fields.update(overrides)
+    return Simulation(**fields)

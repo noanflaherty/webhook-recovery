@@ -55,11 +55,13 @@ export default defineRailway(() => {
     env: { PORT: "8000", ...COMMON },
   });
 
-  // One conductor. Leader election lands in Phase 1, at which point this goes
-  // to 2 -- one leads, one stands by on the advisory lock.
+  // Two conductors: one leads, one stands by on the advisory lock. That is both
+  // the free tier's ceiling (2 replicas per service) and exactly what the claim
+  // needs -- a singleton with a standby behind it is a different statement from
+  // a singleton with nothing behind it.
   const conductor = service("conductor", {
     start: "python -m app.conductor",
-    replicas: 1,
+    replicas: 2,
     env: COMMON,
   });
 

@@ -10,24 +10,43 @@ Rationale: [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md)
 
 ---
 
-## Status: Phase 0 — foundations and frozen contracts
+## Status: Phase 1 — the walking skeleton
 
 **Deployed:** https://api-production-7c78a.up.railway.app
 
-The schema, the clock, the API response shapes and the deployment topology exist. **No business logic
-does**: the conductor and worker loops are empty on purpose. Phase 0 builds the parts that are expensive
-to change and nothing that is interesting to demo.
+Events now flow end to end — **producer → ledger → fan-out → admission → worker → `delivered`** — across
+five processes coordinating only through Postgres, with `pg_try_advisory_lock` leader election. Create a
+simulation and its backlog climbs through the scripted outage and drains after it, on real data.
+
+The scheduling is deliberately naive: **global FIFO under one rate budget, no fairness and no policy.**
+That is not throwaway code — it is the `fair_drain = OFF` arm, which Phase 2 needs anyway as the thing
+the toggle is measured against.
 
 | | |
 |---|---|
-| **Built** | 9-table schema in one migration, the virtual clock, simulation lifecycle API, process registry, one image / three start commands, committed fixtures |
-| **Deliberately empty** | producer, fan-out, admission control, policy evaluation, transport, leader election, charts |
+| **Built** | ingest + fan-out, the producer, admission control with the outage gate, derived metric buckets, leader election, `SKIP LOCKED` claim, the full attempt state machine (deliver / retry / fail), consumer seeding |
+| **Deliberately absent** | weights and per-consumer shares, `max_staleness` → `expired`, coalescing → `superseded`, the fair-drain toggle, charts, lease reaping |
+
+One 45-second run at 20×, from `scripts/verify.sh`:
+
+```
+t=411s outage     Acme b=1757 d=716   Bolt b=1757 d=716   Clover b=234 d=93
+t=512s recovery   Acme b=1308 d=1776  Bolt b=1309 d=1775  Clover b=171 d=234
+t=614s recovery   Acme b=758  d=2946  Bolt b=758  d=2946  Clover b=104 d=385
+t=715s recovery   Acme b=215  d=4104  Bolt b=215  d=4104  Clover b=30  d=541
+t=816s recovery   Acme b=0    d=4917  Bolt b=0    d=4917  Clover b=0   d=647
+```
+
+Acme and Bolt track each other exactly, because they subscribe to the same four event types and nothing
+yet distinguishes them. Phase 2's policies are what pull those two lines apart — which is the point of
+running the baseline first.
 
 ## Run it
 
 ```bash
-make up                          # postgres -> migrate -> api + conductor + 3 workers
+make up                          # postgres -> migrate -> api + 2 conductors + 3 workers
 open http://localhost:8000
+curl -sX POST localhost:8000/api/simulation -H 'content-type: application/json' -d '{}'
 ```
 
 All from one image. Postgres is published on host port **5433** (5432 is usually taken); override with
@@ -51,24 +70,45 @@ With the stack up:
 ```bash
 make check                       # ruff, mypy strict, pytest
 make migration-check             # the migration still matches the models
-make verify                      # health, processes, schema, clock, served bundle
+make fixtures-check              # openapi.json and the fixtures are not stale
+make verify                      # the exit criteria, as executable checks
 ```
 
-`make verify` runs [`scripts/verify.sh`](scripts/verify.sh), which is the Phase 0 exit criteria as
-executable checks. It works against the deployment too:
+`make verify` runs [`scripts/verify.sh`](scripts/verify.sh). It works against the deployment too:
 
 ```bash
-EXPECTED_PROCESSES=3 ./scripts/verify.sh https://api-production-7c78a.up.railway.app
+EXPECTED_PROCESSES=4 ./scripts/verify.sh https://api-production-7c78a.up.railway.app
 ```
 
 ```
-== health          api up, database reachable
-== processes       4 live (1 conductor + 3 workers), all inside the 15s window
-== schema          9 tables, 3 partial indexes on delivery
-== clock           +20.92 virtual s per real second at 20x
-                   frozen while paused; +0.26s jump on resume
-== served bundle   SPA index served; unknown /api path 404s
+== health             api up, database reachable
+== processes          5 live (2 conductors + 3 workers), exactly one leader
+== schema             9 tables, 3 partial indexes on delivery
+== clock              +20.16 virtual s per real second at 20x
+                      frozen while paused; no jump across the pause
+== delivery pipeline  3 consumers seeded at creation
+                      1513 deliveries reached 'delivered'; decision feed populated
+                      241 buckets (0..240) x 3 consumers, contiguous and complete
+== served bundle      SPA index served; unknown /api path 404s
 ```
+
+Two of those checks exist because the failures they catch are **invisible**, and both are in the metrics
+path — the one component of this system that can lie convincingly. Everything else announces itself:
+nothing gets delivered, or the backlog never drains, or a process crashes. A metrics bug produces a
+chart that is smooth, plausible and wrong.
+
+- **Contiguity.** A gap in `bucket_virtual_s` is a hole in the chart that a client cannot distinguish
+  from a zero. Rows are written as the full consumer × bucket cross product so it never has to guess.
+- **Counters are derived, not sampled.** A conductor pass covers `interval × speed` virtual seconds — a
+  whole bucket at the shipped defaults — so writing "the current bucket's count" undercounts attempts by
+  a roughly constant factor. On a *100% stacked* chart, an equal undercount across three consumers draws
+  a picture that looks exactly right. So they come from two grouped queries over `attempt.started_at`
+  and `delivery.completed_at` instead, and the invariant is exact:
+
+  ```
+  SUM(metrics_snapshot.attempts)  ==  COUNT(attempt)     -- over the written bucket range
+  13001                           ==  13001
+  ```
 
 The clock is the check worth reading carefully. It is the only Phase 0 output that three separate
 processes have to agree on, and a wrong answer there is invisible until Phase 2, where it presents as a
@@ -97,12 +137,23 @@ app/
     enums.py      TEXT + CHECK enums, backed by StrEnum
     models.py     all 9 tables and the partial indexes -- the single source of schema truth
     clock.py      Clock protocol, VirtualClock, WallClock, and the epoch arithmetic
-    scenario.py   phase boundaries (the scenario engine itself is Phase 3)
+    scenario.py   phase boundaries, the cast, the event mix, and seeding
     registry.py   self-registration + heartbeats
     runner.py     the shared entrypoint: register, heartbeat, loop, drain on SIGTERM
-  api/            FastAPI app, the frozen response models, routes
-  conductor/      empty loop (Phase 1: leader election, admission, metrics)
-  worker/         empty loop (Phase 1: SKIP LOCKED claim, lease, attempt)
+  api/
+    routes.py     the read/write plane
+    ingest.py     ledger write + fan-out, in one transaction
+    producer.py   the demo traffic generator, in the process that owns ingest
+    schemas.py    the frozen response models
+  conductor/
+    leader.py     pg_try_advisory_lock, held on the connection it writes through
+    admission.py  the budget, the candidate query, the ready flip
+    metrics.py    derived counters, sampled gauges, backfill on failover
+    service.py    one pass: lead, measure, admit
+  worker/
+    transport.py  the ConsumerTransport seam: simulated, and an HTTP stub
+    claim.py      SKIP LOCKED claim, lease, and the completion state machine
+    service.py    one iteration: claim, gather, complete
 alembic/          one migration
 scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh
 frontend/         Vite + React stub, and the committed fixtures Track B builds against
@@ -115,7 +166,8 @@ the frontend and backend proceed in parallel. `frontend/src/fixtures/*.json` are
 models**, so a fixture cannot drift from the contract, and `openapi.json` is committed alongside.
 
 ```
-POST   /api/simulation                                create (Phase 3 also seeds consumers)
+POST   /api/simulation                                create (= reset), seeds consumers + policies
+POST   /api/simulation/{id}/event                     ledger one event and fan it out
 GET    /api/simulation/{id}                           config + current virtual time + phase
 PATCH  /api/simulation/{id}                           pause/resume, speed, fair drain, outage override
 GET    /api/simulation/{id}/consumer                  consumers with live counters
@@ -138,6 +190,51 @@ Clover CRM       delivered=508   expired=0     superseded=0    caught up after  
 
 Regenerate with `uv run python scripts/gen_fixtures.py`. The RNG is seeded, so the diff is empty unless
 the shape genuinely changed.
+
+## Decisions made in Phase 1
+
+- **Leadership is the connection, not a flag.** `pg_try_advisory_lock` is session-scoped, and every
+  conductor write goes through the connection the lock is held on — never `session_scope()`. So fencing
+  is automatic rather than implemented: losing the lock and losing the ability to write are the *same
+  event*, and there is no window in which a demoted leader can still write. A lock table with an expiry
+  would need a fencing token on every write to be equally safe; this makes that class of bug
+  unrepresentable. It is also why failover needs no failure detector — a killed process closes its
+  socket, and Postgres drops the lock with it.
+- **The bucket key comes from a fixed origin.** `sim.virtual_epoch` is *rebased* on every pause, resume
+  and speed change — that is how the derived clock keeps virtual time continuous across them. Bucketing
+  against it would renumber the whole series the first time anyone touched the speed slider: new rows
+  collide with old ones through the upsert, and `?since_bucket=` stops being monotonic, which freezes
+  the chart. Buckets key off `VIRTUAL_EPOCH_ZERO`, the same origin behind `virtual_now_s`.
+- **The metrics cursor is read from the table, not from memory.** `MAX(bucket_virtual_s)` per
+  simulation, cached in memory only as an optimisation. A new leader has no memory of the old one's
+  progress, so deriving it is what makes failover *backfill* the gap rather than strand it — a
+  memory-only cursor leaves a permanent hole in the chart at exactly the moment the demo is showing off
+  failover. Capped at 300 buckets per pass so a long gap catches up over several passes.
+- **Attempts are recorded at claim time, not completion.** The fairness window counts attempts
+  *started*, and batching the insert into the claim transaction makes that free rather than an extra
+  write. It also means admission has to subtract the outstanding `ready` buffer from its rate budget:
+  work already admitted has no `attempt` row yet, so a pure window count would admit against the same
+  budget twice. That subtraction is a read-modify-write — which is the actual reason the conductor must
+  be a singleton, rather than tidiness.
+- **The workers batch; the conductor does not deepen its buffer.** Per-attempt round trips do not
+  survive 20×, so an iteration is one claim transaction, then every transport call concurrently, then
+  one completion transaction. The claim commits *before* any transport runs, so no row lock is ever held
+  across the network. And because the work stays inside a single `loop_body` call rather than escaping
+  into background tasks, the runner's existing drain guarantee still covers it with no task bookkeeping.
+- **The admission ceiling is the loop interval, not the buffer depth.** Available throughput is
+  `ready buffer depth ÷ conductor_loop_interval_s`. The buffer must stay shallow — its depth *is* the
+  granularity of fairness — so the interval is the only free variable: 0.05s gives ~720 attempts/s
+  against ~600/s of demand at 20×. Raise it and the backlog stops draining, which presents as a
+  scheduler bug rather than a tuning problem. Worth knowing which knob it is.
+- **Consumer seeding moved from Phase 3 to here.** Not a choice — fan-out reads `subscription`, so a
+  simulation with no consumers accepts events and delivers them to nobody. Policies came along for free
+  and sit unread until Phase 2 evaluates them.
+- **The transport is finished, not stubbed.** `SimulatedTransport` handles latency, jitter, failure
+  rates and a `down` flag, and the worker handles every outcome — deliver, retry with backoff, fail at
+  the cap. Seeded consumers have `sim_failure_rate = 0.0`, so Phase 1 still *observes* "always 200"; the
+  state machine is simply complete. The RNG is seeded from `(simulation_id, delivery_id, attempt_no)`
+  rather than carried as transport state, so an attempt's outcome does not depend on which worker picked
+  it up or how the batch interleaved — otherwise every retry test is a coin flip.
 
 ## Decisions frozen in Phase 0
 
@@ -191,7 +288,7 @@ railway up --service api --detach               # and conductor, worker
 | Service | Command | Replicas |
 |---|---|---|
 | `api` | `alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` | 1 |
-| `conductor` | `python -m app.conductor` | 1 → 2 once leader election lands in Phase 1 |
+| `conductor` | `python -m app.conductor` | 2 — one leads, one stands by on the advisory lock |
 | `worker` | `python -m app.worker` | 3 |
 
 Then `make verify API=https://…` against the public URL.
@@ -227,5 +324,7 @@ as a transient condition to wait out rather than a reason to exit.
 
 ## Next
 
-**Phase 1** — the walking skeleton: ingest → fan-out → naive conductor → worker → `delivered`, plus
-`pg_try_advisory_lock` leader election held on the same session the conductor writes through.
+**Phase 2** — the two claims. Fairness (weighted shares, concurrency caps and `max_attempts_per_s` from
+the same sliding window, plus the `fair_drain_enabled` toggle) and policy (`max_staleness` → `expired`,
+`coalesce: latest_by_key` → `superseded`). Both slot into seams this phase left open:
+`select_candidates()` for fairness, and a policy check between it and `mark_ready()`.

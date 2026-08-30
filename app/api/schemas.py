@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,6 +81,37 @@ class SimulationRead(ApiModel):
     phase: str
 
     created_at_wall: datetime
+
+
+# ---------------------------------------------------------------------------
+# Ingest
+# ---------------------------------------------------------------------------
+
+
+class EventCreate(ApiModel):
+    """One event from the provider.
+
+    ``occurred_at`` is deliberately not a field: it is server-assigned from the
+    simulation's virtual clock. Letting a caller set it would let them backdate
+    an event past a staleness bound, and staleness is a policy the *consumer*
+    owns.
+    """
+
+    event_type: str = Field(max_length=64)
+    entity_key: str = Field(max_length=128)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventRead(ApiModel):
+    id: int
+    simulation_id: uuid.UUID
+    event_type: str
+    entity_key: str
+    occurred_at: datetime
+    #: How many consumers this event fanned out to. Zero is a legitimate
+    #: answer -- the ledger records what the provider emitted, not what anyone
+    #: subscribed to.
+    delivery_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +244,8 @@ __all__ = [
     "ConsumerRead",
     "DecisionRead",
     "DecisionsPage",
+    "EventCreate",
+    "EventRead",
     "HealthRead",
     "MetricsBucket",
     "MetricsPage",

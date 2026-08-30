@@ -7,6 +7,8 @@ router so ``/api/*`` always wins, and unknown paths fall through to
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from app.api.producer import run_producer
 from app.api.routes import router
 from app.core.db import dispose_engine
 from app.core.settings import get_settings
@@ -26,11 +29,32 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Boot the api, and the producer alongside it.
+
+    The producer lives in the api process because that is where ingest lives:
+    in production the callers of ingest are the provider's own services, and the
+    honest simulation of that is a caller inside the process that accepts, not a
+    fourth process type invented for the demo.
+
+    It runs on every api replica, which for this deployment is one. More would
+    multiply the event rate rather than share it -- the fix is a lock like the
+    conductor's, and it is not needed until the api scales out, which is a
+    stateless-read concern the producer does not participate in.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     log.info("api starting")
-    yield
-    await dispose_engine()
-    log.info("api stopped")
+    stop = asyncio.Event()
+    producer = asyncio.create_task(run_producer(stop), name="producer")
+    try:
+        yield
+    finally:
+        stop.set()
+        # Bounded: a producer tick is one short transaction, and hanging the
+        # shutdown on it would turn a redeploy into an outage.
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(producer, timeout=5.0)
+        await dispose_engine()
+        log.info("api stopped")
 
 
 def create_app() -> FastAPI:
