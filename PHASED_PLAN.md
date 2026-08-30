@@ -19,11 +19,11 @@
 
 | Phase | Goal | Rough size | Cumulative |
 |---|---|---|---|
-| **0** ✅ | Foundations & frozen contracts | 1–1.5h | 1.5h |
-| **1** ✅ | Walking skeleton + the cast, deployed | 1–1.5h | 3h |
-| **2** ✅ | Instrument panel — UI live on the naive run | 1–1.5h | 4.5h |
-| **3** ✅ | The two claims: fairness + policy — **minimum viable submission** | 1.5–2h | 6.5h |
-| **4** 🔨 | Polish + docs + video (**required deliverable**) | 1.5–2h | 8.5h |
+| **0** | Foundations & frozen contracts | 1–1.5h | 1.5h |
+| **1** | Walking skeleton + the cast, deployed | 1–1.5h | 3h |
+| **2** | Instrument panel — UI live on the naive run | 1–1.5h | 4.5h |
+| **3** | The two claims: fairness + policy — **minimum viable submission** | 1.5–2h | 6.5h |
+| **4** | Polish + docs + video (**required deliverable**) | 1.5–2h | 8.5h |
 
 **What changed from the original sequencing:** the UI was Phase 3b, behind fairness and policy. It is now Phase 2, in
 front of them. Two things made that cheap. Phase 0 froze the contract *and* committed a fixture per endpoint, so the
@@ -70,7 +70,7 @@ charts. The tracks stop being independent at Phase 2 — that is the cost of the
 
 ---
 
-## Phase 0 — Foundations & Contracts ✅
+## Phase 0 — Foundations & Contracts
 
 Blocking. Nothing else started until this landed.
 
@@ -87,7 +87,7 @@ Blocking. Nothing else started until this landed.
 **Exit:** `docker compose up` → migrations apply, processes register and heartbeat.
 **Unlocked:** Track B, immediately — which is what made the resequencing below possible at all.
 
-## Phase 1 — Walking Skeleton ✅
+## Phase 1 — Walking Skeleton
 
 End-to-end with deliberately stupid logic. **This is the highest-value phase per hour** because it retires the
 deployment risk.
@@ -109,7 +109,7 @@ real normal → outage → recovery run.
 **Risk retired:** the entire deploy topology.
 **Unlocks:** Phase 2 has live data, not just fixtures.
 
-## Phase 2 — Instrument Panel ✅
+## Phase 2 — Instrument Panel
 
 The UI, pointed at Phase 1's naive run. Two jobs, and the second is the one that justifies the reordering:
 
@@ -148,7 +148,7 @@ was only checkable at hour seven. Now you can look at the naive chart and see wh
 line of the scheduler — if the backlog lines drain smoothly under naive FIFO, the knob is wrong and the whole demo would
 have been flat.
 
-## Phase 3 — The Two Claims ✅
+## Phase 3 — The Two Claims
 
 The actual product, and now the **minimum viable submission**. Two workstreams that parallelize *if* the seam is defined
 first:
@@ -184,7 +184,7 @@ cheap to test. The instrument does not replace these — it tells you *where* to
 **Exit:** flipping the toggle produces measurably different per-consumer drain rates, watched live in the Phase 2
 charts, and against the retained Phase 2 naive `simulation_id` as a permanent baseline.
 
-## Phase 4 — Polish, Docs + Video 🔨
+## Phase 4 — Polish, Docs + Video
 
 Required, not optional.
 
