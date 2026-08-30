@@ -307,8 +307,8 @@ async def complete_batch(
             )
 
     # The lease columns are deliberately left as they are. They are a record of
-    # the last worker to hold the row, and every reader that cares -- the
-    # process strip, and the reaper predicate if one is ever built -- gates on
+    # the last worker to hold the row, and every reader that cares --
+    # ``GET /api/process``, and the reaper predicate if one is ever built -- gates on
     # `state = 'in_flight'` anyway, so a stale lease on a settled row is inert.
     if delivered:
         await conn.execute(

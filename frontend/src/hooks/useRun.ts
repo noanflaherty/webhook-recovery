@@ -1,19 +1,16 @@
 /**
  * Everything that moves, in one place.
  *
- * Five pollers at four cadences, one metrics buffer, one interpolated clock.
- * Components below this are pure functions of what it returns, which is what
- * keeps the live and replay sources genuinely interchangeable -- neither of them
- * knows anything about timers.
+ * Three pollers at two cadences, one metrics buffer, one interpolated clock.
+ * Components below this are pure functions of what it returns, so nothing that
+ * renders knows a timer exists.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { DataSource } from '../api/source'
+import type { LiveSource } from '../api/client'
 import type {
   ConsumerRead,
-  DecisionRead,
   MetricsBucket,
-  ProcessRead,
   SimulationPatch,
   SimulationRead,
 } from '../api/types'
@@ -23,8 +20,6 @@ import { consumersFrom, mergeBuckets, type ConsumerRef } from '../transform/seri
 const SIMULATION_MS = 500
 const METRICS_MS = 1000
 const CONSUMERS_MS = 1000
-const DECISIONS_MS = 1500
-const PROCESSES_MS = 3000
 /** How often the interpolated clock re-renders. Cosmetic, so 10Hz is plenty. */
 const CLOCK_MS = 100
 
@@ -60,8 +55,6 @@ interface Snapshot {
   simulation: SimulationRead | null
   consumers: ConsumerRead[]
   buckets: MetricsBucket[]
-  decisions: DecisionRead[]
-  processes: ProcessRead[]
   /**
    * Each observed change to `fair_drain_enabled`, and which way it went.
    *
@@ -81,8 +74,6 @@ const EMPTY: Snapshot = {
   simulation: null,
   consumers: [],
   buckets: [],
-  decisions: [],
-  processes: [],
   fairDrainFlips: [],
   error: null,
   loading: true,
@@ -108,7 +99,7 @@ const STOPPED: ClockAnchor = { virtualS: 0, wallMs: 0, speed: 1, running: false 
  * `source` is nullable so the cold-landing screen -- which has no run to poll --
  * can render without this hook being called conditionally.
  */
-export function useRun(source: DataSource | null): RunState {
+export function useRun(source: LiveSource | null): RunState {
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY)
   const [virtualNowS, setVirtualNowS] = useState(0)
   const anchorRef = useRef<ClockAnchor>(STOPPED)
@@ -217,16 +208,6 @@ export function useRun(source: DataSource | null): RunState {
         const consumers = await source.getConsumers()
         if (!cancelled) setSnapshot((s) => ({ ...s, consumers }))
       }, CONSUMERS_MS),
-
-      start(async () => {
-        const page = await source.getDecisions()
-        if (!cancelled) setSnapshot((s) => ({ ...s, decisions: page.decisions }))
-      }, DECISIONS_MS),
-
-      start(async () => {
-        const processes = await source.getProcesses()
-        if (!cancelled) setSnapshot((s) => ({ ...s, processes }))
-      }, PROCESSES_MS),
     ]
 
     return () => {

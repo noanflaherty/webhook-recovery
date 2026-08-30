@@ -13,9 +13,10 @@ Seeding lives here because fan-out reads ``subscription``: with no rows there
 is nothing to deliver. Policies come along with the consumers, and the conductor
 reads them at dispatch time.
 
-Rates are per *virtual* second and are back-derived from the committed frontend
-fixtures, so the charts drawn against real data have the same shape as the ones
-the frontend was built against.
+Rates are per *virtual* second, and are tuned so that recovery is genuinely
+contended: the provider's global budget sits below the sum of the per-consumer
+rate caps, which is the only condition under which the fair-drain toggle can
+change anything. If it ever looks like a no-op, check that ratio first.
 """
 
 from __future__ import annotations

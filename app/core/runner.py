@@ -73,9 +73,10 @@ class ProcessRunner:
     def mark_leader(self, value: bool) -> None:
         """Called by the conductor each pass; read by the heartbeat.
 
-        Observability only. ``process.is_leader`` is what the UI's process strip
-        renders; it is never read back to decide anything, because leadership is
-        the advisory lock and nothing else.
+        Observability only. ``process.is_leader`` is served by ``GET
+        /api/process`` and asserted by ``scripts/verify.sh``; it is never read
+        back to decide anything, because leadership is the advisory lock and
+        nothing else.
         """
         self._is_leader = value
 

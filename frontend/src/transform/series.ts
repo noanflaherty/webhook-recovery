@@ -149,12 +149,3 @@ export function deriveCaughtUpAfter(buckets: MetricsBucket[], consumerId: number
   }
   return earliest === null ? null : earliest - OUTAGE_ENDS_AT_S
 }
-
-/** Peak backlog per consumer, for the y-axis story and the cards. */
-export function peakBacklog(buckets: MetricsBucket[], consumerId: number): number {
-  let peak = 0
-  for (const bucket of buckets) {
-    if (bucket.consumer_id === consumerId) peak = Math.max(peak, bucket.backlog)
-  }
-  return peak
-}

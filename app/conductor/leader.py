@@ -46,8 +46,8 @@ class LeaderLock:
 
     Acquired once and kept across iterations rather than taken per pass. Both
     are correct -- a pass is a single read-modify-write and the lock spans it
-    either way -- but re-taking it every 50ms makes the leader badge in the
-    process strip flap, which reads as broken.
+    either way -- but re-taking it every 50ms makes the leader flag in
+    ``GET /api/process`` flap, which reads as broken to anything watching it.
     """
 
     __slots__ = ("_conn", "_key", "_stack")

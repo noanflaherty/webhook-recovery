@@ -359,7 +359,7 @@ class MetricsSnapshot(Base):
 
 
 class Process(Base):
-    """Self-registered process, for the UI's process strip.
+    """Self-registered process, for ``GET /api/process``.
 
     Observability only: not required for correctness, and leader election never
     reads it -- leadership is decided entirely by the Postgres advisory lock.

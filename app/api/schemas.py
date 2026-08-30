@@ -1,8 +1,9 @@
 """The frozen API contract.
 
-These shapes are the boundary between the backend and the frontend. The
-committed fixtures in ``frontend/src/fixtures/`` are generated *from these
-models*, so they cannot drift from the contract.
+These shapes are the boundary between the backend and the frontend.
+``frontend/src/api/types.ts`` is a hand-written mirror of them, and the
+committed ``openapi.json`` -- generated from these models by
+``scripts/gen_openapi.py`` -- is the witness CI diffs that mirror against.
 
 Changing a field here is a breaking change to the frontend. Add before you
 rename.

@@ -135,14 +135,14 @@ class VirtualClock:
         return self._config.status is SimStatus.PAUSED
 
     def now(self) -> datetime:
-        c = self._config
-        if c.status is SimStatus.PAUSED:
-            # A paused clock is frozen at the virtual time of the pause. If the
-            # column is somehow unset, fall back to the epoch rather than
-            # letting time run on -- a frozen clock is the safe wrong answer.
-            return c.paused_at_virtual if c.paused_at_virtual is not None else c.virtual_epoch
-        elapsed_real = (wall_now() - c.resumed_at_wall).total_seconds()
-        return c.virtual_epoch + timedelta(seconds=elapsed_real * c.speed_multiplier)
+        """Current virtual time.
+
+        Delegates rather than repeating the arithmetic. It used to have its own
+        copy of it, and the copies drifted: one of them froze a finished run's
+        clock and the other did not, which is not a difference either version
+        announces -- both keep returning plausible timestamps.
+        """
+        return _now_at(self._config, wall_now())
 
     async def sleep(self, virtual_seconds: float) -> None:
         """Sleep ``virtual_seconds`` of virtual time, in real time.
@@ -285,8 +285,26 @@ def set_speed(
 
 
 def _now_at(config: SimulationClockConfig, at_wall: datetime) -> datetime:
-    """Virtual time this config reads at a given wall time. Testable without sleeping."""
-    if config.status is SimStatus.PAUSED:
+    """Virtual time this config reads at a given wall time.
+
+    The single implementation of the clock. ``VirtualClock.now()`` is this
+    function at ``wall_now()``; keeping it that way is what stops the two from
+    disagreeing about a state one of them has not been taught about.
+
+    Paused *and* done are both "not advancing", and both stamp
+    ``paused_at_virtual`` on the way in -- the conductor writes it when it
+    retires a drained run, and ``PATCH {"status": "done"}`` writes it for a
+    manual finish. Testing for RUNNING rather than for PAUSED is what makes that
+    true of ``done``: a retired run used to accrue virtual time forever, so one
+    whose last metrics bucket sat at 15:00 reported a clock of 34:00 and
+    climbing, and anything scaling itself to "now" -- a duration, the phase
+    track, a comparison between two finished runs -- read a number that changed
+    every time it was asked for.
+
+    If the column is somehow unset, fall back to the epoch rather than letting
+    time run on: a frozen clock is the safe wrong answer.
+    """
+    if config.status is not SimStatus.RUNNING:
         return config.paused_at_virtual if config.paused_at_virtual is not None else config.virtual_epoch
     elapsed_real = (at_wall - config.resumed_at_wall).total_seconds()
     return config.virtual_epoch + timedelta(seconds=elapsed_real * config.speed_multiplier)

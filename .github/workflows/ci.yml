@@ -78,13 +78,14 @@ jobs:
       - name: Test
         run: uv run pytest
 
-      # The committed fixtures are generated from the Pydantic response models
-      # and are what the frontend builds against. If they drift, the contract
-      # has silently changed underneath the other track.
-      - name: Check the fixtures are not stale
+      # openapi.json is the generated witness of the frozen contract in
+      # app/api/schemas.py, and frontend/src/api/types.ts is a hand-written
+      # mirror of it. If the schema drifts, the contract has silently changed
+      # underneath the other track.
+      - name: Check openapi.json is not stale
         run: |
-          uv run python scripts/gen_fixtures.py
-          git diff --exit-code -- frontend/src/fixtures openapi.json
+          uv run python scripts/gen_openapi.py
+          git diff --exit-code -- openapi.json
 
   frontend:
     name: bundle
