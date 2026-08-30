@@ -122,6 +122,7 @@ async def _drain(
         if claimed:
             await complete_batch(
                 session,
+                worker_id,
                 [Completion(claimed=c, result=AttemptResult(AttemptOutcome.OK, 200)) for c in claimed],
                 now,
             )

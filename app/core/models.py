@@ -241,9 +241,10 @@ class Delivery(Base):
     #: Virtual time the conductor admitted it. Workers claim in this order.
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # --- Lease: recorded, not reclaimed (TECHNICAL_DESIGN.md §Leases) -----
-    # Written from day one precisely so adding a reaper later is a function
-    # rather than a migration.
+    # --- Lease (TECHNICAL_DESIGN.md §Leases) ------------------------------
+    # Stamped by the worker that claims the row, cleared by the reaper that
+    # reclaims it. Both are left in place on a settled row, where they are a
+    # record of the last worker to hold it and nothing reads them.
     leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -260,6 +261,14 @@ class Delivery(Base):
             "simulation_id",
             "ready_at",
             postgresql_where=text("state = 'ready'"),
+        ),
+        # Reaper sweep: ... WHERE simulation_id = $1 AND state = 'in_flight'
+        #                      AND lease_expires_at < $2
+        Index(
+            "ix_delivery_lease",
+            "simulation_id",
+            "lease_expires_at",
+            postgresql_where=text("state = 'in_flight'"),
         ),
         # Conductor candidate scan.
         Index(
@@ -365,9 +374,12 @@ class Process(Base):
     reads it -- leadership is decided entirely by the Postgres advisory lock.
     Nothing in the delivery path consults it.
 
-    Liveness is a read-time filter, not a reaper: stale rows from prior deploys
-    accumulate harmlessly and are never read. UUID id because a booting worker
-    generates it without a database round-trip.
+    Liveness is a read-time filter: a row outside the heartbeat window is simply
+    not returned, and nothing reclaims it in order to decide that. Long-dead
+    rows are pruned on registration, to bound the table rather than to answer a
+    question. (Delivery leases *are* reclaimed -- by
+    :mod:`app.conductor.reaper`, which deliberately never reads this table.)
+    UUID id because a booting worker generates it without a database round-trip.
 
     Deliberately has no ``simulation_id``: a process outlives any one run.
     """
@@ -381,6 +393,10 @@ class Process(Base):
     started_at_wall: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_heartbeat_wall: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_leader: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Set to ask this process to die ungracefully. Read back on its own next
+    #: heartbeat, which is the only reason this table is ever written *to* a
+    #: process rather than by one. Nothing in the delivery path consults it.
+    crash_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         _enum_check("kind", ProcessKind, "kind"),

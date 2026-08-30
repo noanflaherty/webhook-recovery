@@ -13,7 +13,7 @@ a leaderless minute costs throughput and never data.
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -410,10 +410,11 @@ async def read_decisions(
 async def list_processes(session: AsyncSession = Depends(db.get_session)) -> list[ProcessRead]:
     """Live workers and conductors.
 
-    Liveness is this ``WHERE`` clause and nothing else. There is no reaper:
-    stale rows from prior deploys accumulate harmlessly and are never read,
-    which is what keeps "nothing in the delivery path consults it" literally
-    true rather than approximately true.
+    Liveness is this ``WHERE`` clause and nothing else. Nothing reclaims a stale
+    row in order to decide it -- which is what keeps "nothing in the delivery
+    path consults this table" literally true rather than approximately true.
+    Lease reclamation is a different mechanism against a different table, and
+    deliberately does not read this one (:mod:`app.conductor.reaper`).
     """
     settings = get_settings()
     now = wall_now()
@@ -445,17 +446,57 @@ async def list_processes(session: AsyncSession = Depends(db.get_session)) -> lis
         worker_id: count for worker_id, count in lease_counts if worker_id is not None
     }
 
-    return [
-        ProcessRead(
-            id=p.id,
-            kind=ProcessKind(p.kind),
-            hostname=p.hostname,
-            pid=p.pid,
-            started_at_wall=p.started_at_wall,
-            last_heartbeat_wall=p.last_heartbeat_wall,
-            is_leader=p.is_leader,
-            heartbeat_age_s=(now - p.last_heartbeat_wall).total_seconds(),
-            in_flight=in_flight_by_worker.get(p.id, 0),
+    return [_to_process_read(p, now, in_flight_by_worker.get(p.id, 0)) for p in rows]
+
+
+def _to_process_read(process: Process, now: datetime, in_flight: int) -> ProcessRead:
+    return ProcessRead(
+        id=process.id,
+        kind=ProcessKind(process.kind),
+        hostname=process.hostname,
+        pid=process.pid,
+        started_at_wall=process.started_at_wall,
+        last_heartbeat_wall=process.last_heartbeat_wall,
+        is_leader=process.is_leader,
+        heartbeat_age_s=(now - process.last_heartbeat_wall).total_seconds(),
+        in_flight=in_flight,
+    )
+
+
+@router.post("/process/{process_id}/kill", response_model=ProcessRead)
+async def kill_process(
+    process_id: uuid.UUID,
+    session: AsyncSession = Depends(db.get_session),
+) -> ProcessRead:
+    """Ask a process to die ungracefully, on its next heartbeat.
+
+    Not a kill signal -- the API has no way to reach another container, and
+    would not want one. It raises a flag that the target reads back on the
+    heartbeat it was already making, and the target chooses where to act on it
+    (:meth:`app.core.runner.ProcessRunner.die`).
+
+    So the death is asynchronous, up to one heartbeat interval away, and
+    genuinely ungraceful: no drain, no lock release, no deregistration. A worker
+    leaves a batch of leases behind for :mod:`app.conductor.reaper`; a leader
+    conductor drops its advisory lock by dropping the connection under it.
+
+    **There is no revive.** Both compose and Railway restart a process that
+    exits non-zero, and the replacement registers under a fresh id -- so the
+    dead row simply ages out of the liveness window on its own.
+    """
+    process = await session.get(Process, process_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail=f"No process {process_id}")
+
+    process.crash_requested = True
+    await session.flush()
+
+    in_flight = await session.scalar(
+        select(func.count())
+        .select_from(Delivery)
+        .where(
+            Delivery.state == DeliveryState.IN_FLIGHT.value,
+            Delivery.leased_by == process_id,
         )
-        for p in rows
-    ]
+    )
+    return _to_process_read(process, wall_now(), int(in_flight or 0))

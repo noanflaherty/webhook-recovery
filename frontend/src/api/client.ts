@@ -9,6 +9,7 @@
 import type {
   ConsumerRead,
   MetricsPage,
+  ProcessRead,
   SimulationCreate,
   SimulationPatch,
   SimulationRead,
@@ -70,6 +71,12 @@ export class LiveSource {
     return request<MetricsPage>(`${this.base}/metrics?since_bucket=${sinceBucket}`)
   }
 
+  getProcesses(): Promise<ProcessRead[]> {
+    // Not under `base`: the registry is global, because a process outlives any
+    // one run and serves every run at once.
+    return request<ProcessRead[]>('/api/process')
+  }
+
   patch(body: SimulationPatch): Promise<SimulationRead> {
     return request<SimulationRead>(this.base, {
       method: 'PATCH',
@@ -118,6 +125,22 @@ export function retireRun(simulationId: string): Promise<SimulationRead> {
  */
 export function fetchRun(simulationId: string): Promise<SimulationRead> {
   return request<SimulationRead>(`/api/simulation/${simulationId}`)
+}
+
+/**
+ * Ask a process to die ungracefully, so its leases strand and the conductor's
+ * reaper has something to reclaim.
+ *
+ * A free function rather than a `LiveSource` method, because it is not scoped to
+ * a run: the registry it acts on is global, and killing a worker affects every
+ * simulation that worker was serving.
+ *
+ * The death is asynchronous -- the target reads the flag on its next heartbeat
+ * -- so there is nothing useful to do with the response but discard it. The
+ * strip's own poll is what shows the result.
+ */
+export function killProcess(processId: string): Promise<ProcessRead> {
+  return request<ProcessRead>(`/api/process/${processId}/kill`, { method: 'POST' })
 }
 
 export function getHealth(): Promise<{ status: string; db: string }> {

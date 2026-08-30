@@ -174,13 +174,15 @@ async def test_a_successful_attempt_stamps_completed_at(
     """
     simulation_id, maker = committed
     finished_at = NOW + timedelta(seconds=1)
+    worker_id = uuid.uuid4()
 
     async with maker() as session:
-        claimed = await claim_batch(session, simulation_id, uuid.uuid4(), NOW, limit=2)
+        claimed = await claim_batch(session, simulation_id, worker_id, NOW, limit=2)
         await session.commit()
     async with maker() as session:
         await complete_batch(
             session,
+            worker_id,
             [Completion(claimed=c, result=AttemptResult(AttemptOutcome.OK, 200)) for c in claimed],
             finished_at,
         )
@@ -206,13 +208,15 @@ async def test_a_failed_attempt_goes_back_to_pending_with_backoff(
     """Retry is a state transition plus a due time, and nothing else."""
     simulation_id, maker = committed
     finished_at = NOW + timedelta(seconds=1)
+    worker_id = uuid.uuid4()
 
     async with maker() as session:
-        claimed = await claim_batch(session, simulation_id, uuid.uuid4(), NOW, limit=1)
+        claimed = await claim_batch(session, simulation_id, worker_id, NOW, limit=1)
         await session.commit()
     async with maker() as session:
         await complete_batch(
             session,
+            worker_id,
             [
                 Completion(
                     claimed=claimed[0],
@@ -236,9 +240,10 @@ async def test_the_retry_cap_is_terminal(
 ) -> None:
     """A delivery that has exhausted its attempts stops consuming capacity."""
     simulation_id, maker = committed
+    worker_id = uuid.uuid4()
 
     async with maker() as session:
-        claimed = await claim_batch(session, simulation_id, uuid.uuid4(), NOW, limit=1)
+        claimed = await claim_batch(session, simulation_id, worker_id, NOW, limit=1)
         await session.commit()
 
     # Stand the delivery up as if it were on its final attempt.
@@ -249,6 +254,7 @@ async def test_the_retry_cap_is_terminal(
     async with maker() as session:
         await complete_batch(
             session,
+            worker_id,
             [Completion(claimed=exhausted, result=AttemptResult(AttemptOutcome.TIMEOUT))],
             NOW,
         )

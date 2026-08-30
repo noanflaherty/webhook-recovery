@@ -364,7 +364,7 @@
     "/api/process": {
       "get": {
         "summary": "List Processes",
-        "description": "Live workers and conductors.\n\nLiveness is this ``WHERE`` clause and nothing else. There is no reaper:\nstale rows from prior deploys accumulate harmlessly and are never read,\nwhich is what keeps \"nothing in the delivery path consults it\" literally\ntrue rather than approximately true.",
+        "description": "Live workers and conductors.\n\nLiveness is this ``WHERE`` clause and nothing else. Nothing reclaims a stale\nrow in order to decide it -- which is what keeps \"nothing in the delivery\npath consults this table\" literally true rather than approximately true.\nLease reclamation is a different mechanism against a different table, and\ndeliberately does not read this one (:mod:`app.conductor.reaper`).",
         "operationId": "list_processes_api_process_get",
         "responses": {
           "200": {
@@ -377,6 +377,47 @@
                   },
                   "type": "array",
                   "title": "Response List Processes Api Process Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/process/{process_id}/kill": {
+      "post": {
+        "summary": "Kill Process",
+        "description": "Ask a process to die ungracefully, on its next heartbeat.\n\nNot a kill signal -- the API has no way to reach another container, and\nwould not want one. It raises a flag that the target reads back on the\nheartbeat it was already making, and the target chooses where to act on it\n(:meth:`app.core.runner.ProcessRunner.die`).\n\nSo the death is asynchronous, up to one heartbeat interval away, and\ngenuinely ungraceful: no drain, no lock release, no deregistration. A worker\nleaves a batch of leases behind for :mod:`app.conductor.reaper`; a leader\nconductor drops its advisory lock by dropping the connection under it.\n\n**There is no revive.** Both compose and Railway restart a process that\nexits non-zero, and the replacement registers under a fresh id -- so the\ndead row simply ages out of the liveness window on its own.",
+        "operationId": "kill_process_api_process__process_id__kill_post",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -819,7 +860,7 @@
           "heartbeat_age_s"
         ],
         "title": "ProcessRead",
-        "description": "A live process. Observability only.\n\nOnly rows that heartbeat inside the liveness window are returned; liveness\nis a read-time filter, never a reaper."
+        "description": "A live process. Observability only.\n\nOnly rows that heartbeat inside the liveness window are returned; liveness\nis a read-time filter: nothing reclaims a stale row in order to decide it."
       },
       "SimStatus": {
         "type": "string",

@@ -17,6 +17,7 @@ import { BacklogChart } from './components/BacklogChart'
 import { ConsumerCards } from './components/ConsumerCards'
 import { ControlBar } from './components/ControlBar'
 import { EmptyState } from './components/EmptyState'
+import { ProcessStrip } from './components/ProcessStrip'
 import { RunList } from './components/RunList'
 import { ShareChart } from './components/ShareChart'
 import { useRun } from './hooks/useRun'
@@ -259,6 +260,13 @@ export default function App() {
         consumers={run.consumerRefs}
         fairDrainFlips={run.fairDrainFlips}
       />
+
+      {/*
+        Last, and deliberately below the two claims. It is not part of either
+        argument -- it is where you go to interfere with the run once you have
+        read them, and where the consequence of interfering shows up.
+      */}
+      <ProcessStrip processes={run.processes} />
     </main>
   )
 }

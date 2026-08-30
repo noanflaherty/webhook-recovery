@@ -29,7 +29,7 @@ As the provider operating the webhook system...
 | **Delivery** | The (event, consumer) pair — the unit of work in the queue. One event fans out to N deliveries. |
 | **Attempt** | One try at delivering a delivery. Fairness is measured in attempts. |
 | **Policy** | Per (consumer, event_type): `max_staleness_s`, `coalesce` (`none` \| `latest_by_key`). Absent policy = deliver everything. |
-| **Lease** | A claim by one worker on one delivery, stamped with an expiry. Recorded for attribution and debugging; reclamation is out of scope (§Leases). |
+| **Lease** | A claim by one worker on one delivery, stamped with an expiry. The conductor reclaims it once the expiry passes, which is how a dead worker's work comes back (§Leases). |
 | **Simulation** | A namespace holding all of the above plus a virtual clock. Each reviewer visit creates a fresh one. |
 
 ## Architecture
@@ -55,6 +55,7 @@ Three process types, sharing nothing but Postgres.
         │  · evaluate policy   │        │  · claim `ready`    │
         │  · fairness + rates  │        │  · lease + attempt  │
         │  · mark `ready`      │        │  · record outcome   │
+        │  · reclaim leases    │        │                     │
         │  · write metrics     │        │  (no policy logic)  │
         └──────────────────────┘        └─────────────────────┘
 ```
@@ -295,27 +296,50 @@ needs a query.
   runs at 20× speed.
 - `HttpTransport` — real POST, HMAC-signed, timeouts, status-code mapping. Stub + docstring only.
 
-### Leases: recorded, not reclaimed
+### Leases: reclaimed on expiry, never on liveness
 
-A worker stamps `leased_by` and `lease_expires_at` when it claims a delivery. Nothing reclaims an expired lease —
-**lease reaping is out of scope** — so a worker that dies mid-attempt strands its `in_flight` rows permanently, and each
-stranded row permanently consumes one of that consumer's concurrency slots.
+A worker stamps `leased_by` and `lease_expires_at` when it claims a delivery. If it dies before completing, the row is
+stuck `in_flight`: it counts against its consumer's `concurrency_cap`, so that capacity is *gone* rather than merely
+idle, and it counts in the backlog, so the run can never satisfy `is_finished` and is swept by every conductor pass
+from then on.
 
-That is a real bug class, and it is worth being precise about why it is acceptable here rather than pretending it isn't
-one:
+The reaper (`app/conductor/reaper.py`) runs first in each pass:
 
-- **Blast radius is one simulation.** Consumers are namespaced by `simulation_id`, so a stranded row degrades only the
-  run it belongs to. The next reviewer's fresh simulation is unaffected, and Reset clears it.
-- **A run is ~45 real seconds.** The window in which a worker could die mid-scenario is small, and a deploy mid-demo is
-  not a scenario worth engineering for.
-- **The fix is a known ~20-line function**, not a redesign: one predicate (`state='in_flight' AND lease_expires_at <
-  now()`), one index, and an `attempt` row with `outcome='lease_expired'`. The lease columns are written from day one
-  precisely so adding it later is a function rather than a migration.
+```sql
+SELECT id, attempt_count FROM delivery
+WHERE simulation_id = $1 AND state = 'in_flight' AND lease_expires_at < $2
+FOR UPDATE SKIP LOCKED;
+```
 
-The design is worth stating even though it isn't built, because it is what a production version does: reclamation asks
-"has this lease expired?", never "is that worker alive?" **Timeouts replace liveness detection** — which is why the
-correctness path never needs the process registry, and why lease-based systems tolerate worker death without a failure
-detector. Listed under Future Work.
+Each row goes back to `pending` with the retry backoff a 5xx would have earned — an expired lease *is* a failed attempt
+— or to `failed` if that was its last one, so a delivery whose worker keeps dying stops cycling at the head of the
+queue. `leased_by` and `lease_expires_at` are cleared as it goes.
+
+**The shape is the point: it asks "has this lease expired?", never "is that worker alive?"** Timeouts replace liveness
+detection, which is why the correctness path never reads the `process` table and why a dead worker needs no failure
+detector to be tolerated. Four details are load-bearing:
+
+- **The `attempt` row already exists.** It is written when the attempt *starts*, because that is what the fairness
+  window counts, so reclamation *closes* the open row with `outcome='lease_expired'` rather than inserting a second
+  one. A lease outlives the fairness window six times over (30 virtual seconds against 5), so a fresh row would land
+  inside the current window and charge a consumer, now, for an attempt it already paid for half a minute ago — and it
+  would then be throttled for capacity a dead worker never spent on its behalf.
+- **`SKIP LOCKED`, not a wait.** A worker that is slow rather than dead holds a row lock through its completion
+  transaction. Without the skip, a 50ms conductor pass blocks on it, and the mechanism that exists so a stuck worker
+  costs nothing becomes the thing a stuck worker stalls.
+- **Completion is fenced on the lease.** A worker sleeping in the transport against a consumer that is down can have
+  its lease expire while it is perfectly alive, and then arrive holding a claim on a delivery that has already been
+  requeued. Every write in `complete_batch` carries `AND state = 'in_flight' AND leased_by = :worker_id`, so the late
+  completion writes zero rows instead of retiring a webhook that was never accepted.
+- **It lives in the conductor, not a fourth process.** The pass already runs under the advisory lock, so there is one
+  reaper by construction; and it already holds each simulation's virtual clock, which is what leases are stamped in. A
+  lease therefore cannot expire while a simulation is paused — virtual time is frozen, and a pass only covers running
+  simulations.
+
+Reclamation is *correct* rather than *fast*: it waits out the TTL even when the worker is provably gone. Using
+heartbeats to reclaim a known-dead worker's leases immediately is a strict optimization on top, and is listed under
+Future Work — the timeout stays the source of truth either way, because that is what makes the mechanism independent of
+the failure detector being right.
 
 ### The `process` table is observability only
 
@@ -327,9 +351,22 @@ faith.
 Postgres advisory lock. Nothing in the delivery path consults it.
 In production this view comes from the orchestrator and metrics, not a database table.
 
-Deliberately **out of scope: simulated process kills.** An earlier design had a `crash_requested` flag and Kill/Revive
-buttons to force ungraceful deaths on camera, paired with a reaper that reclaimed their work. Both were cut together
-(§Leases). Chaos controls and lease reclamation are listed under Future Work.
+It carries one flag that is written *to* a process rather than by one: `crash_requested`, set by
+`POST /api/process/{id}/kill`. The API cannot reach another container and does not try — the target reads the flag back
+on the heartbeat it was already making, so the kill costs no round trip of its own and arrives within one heartbeat
+interval. This is the one place the table is not purely observational, and it is still outside the delivery path:
+a process reads its own row, and nothing reads it back.
+
+**Where a process acts on the flag is the whole design.** A worker that exited at an arbitrary moment would usually
+strand nothing — a batch is a couple of milliseconds inside a 20ms loop — so it acts between the committed claim and
+the completion that answers it, where a full batch of leases is stranded every time. A conductor acts at the top of its
+pass, while the advisory lock's session is still open, so the lock drops the way a crash drops it: Postgres notices the
+connection go rather than reading a release. That is the failover path a graceful stop can never exercise, because a
+graceful stop releases the lock.
+
+`os._exit`, not `sys.exit`: it skips `finally` blocks, the drain, deregistration and the teardown seam. **There is no
+revive** and none is needed — compose and Railway both restart a process that exits non-zero, and the replacement
+registers under a fresh id while the dead row ages out of the liveness window on its own.
 
 ## API
 
@@ -360,6 +397,7 @@ PATCH  /api/simulation/{id}                 pause/resume, speed, fair_drain_enab
 GET    /api/simulation/{id}/metrics?since_bucket=N   → new metrics_snapshot rows
 GET    /api/simulation/{id}/decisions?since_id=N     → recent terminal decisions for the event feed
 GET    /api/process                         live workers + conductors, with current leader
+POST   /api/process/{id}/kill               ask that process to exit without draining
 ```
 
 **No SSE.** The client polls `/metrics?since_bucket=N` every ~500ms and appends to its chart series. One fewer moving
@@ -522,16 +560,24 @@ Single page:
    attempt budget and slow down whichever run you are actually watching; a list of runs is the first place that is
    visible.)*
 
-**Built and then removed.** Two further panels were specified here, shipped in Phase 2, and cut in Phase 3:
+6. **Process strip** — workers (heartbeat, in-flight count) and conductors (leader marked), each with a **kill**
+   control.
 
-- **Process strip** — workers (heartbeat, in-flight count) and conductors (leader marked), so the multi-process
-  architecture was visible rather than claimed.
+   *(Removed in Phase 3 and brought back for one reason: it stopped being observational. The argument for cutting it
+   was that it proved something the page never disputes — and that was true while it only reported. It now carries the
+   only control that acts on a process rather than a run, and the two failure paths it makes watchable are ones no
+   chart can show: a killed worker's in-flight count holds its stranded batch until the lease expires and the conductor
+   reclaims it, and a killed leader hands the advisory lock to the standby. The strip judges liveness a second time and
+   more tightly than `GET /api/process` does, because a process killed ungracefully never deregisters — see §Leases.)*
+
+**Built and then removed.** One further panel was specified here, shipped in Phase 2, and cut in Phase 3:
+
 - **Decision feed** — recent terminal decisions ("superseded by 913", "stale by 43s (max 120s)"), so policy behaviour
   was legible as sentences rather than only as counters.
 
-Both did their job during development and neither survived contact with the finished argument. The process strip proves
-something the page never disputes, and once the consumer cards carry per-consumer expired/superseded totals the feed is
-a slower way to read the same fact. They were removed to keep the page to the two claims and nothing else.
+It did its job during development and did not survive contact with the finished argument: once the consumer cards carry
+per-consumer expired/superseded totals, the feed is a slower way to read the same fact. It was removed to keep the page
+to the two claims and nothing else.
 
 **The recorded run, also removed.** The UI shipped a second data source: `ReplaySource`, which served ~520 kB of
 committed fixtures against a locally-driven virtual clock at `?source=replay`, so the deployed URL stayed useful when
@@ -550,11 +596,11 @@ recording was standing in for — but that link needs the backend awake too. `fr
 used to build against those fixtures and now constructs its own series, which is an improvement: the properties the
 tests depend on are stated in the file that depends on them rather than being emergent facts about an opaque blob.
 
-`GET /api/simulation/{id}/decisions` and `GET /api/process` are **unchanged and still served** — `scripts/verify.sh`
-asserts against both, and they remain the honest way to inspect a run. What was removed is the decision to put them on
-the page, not the data. That is also why `completed_at` is still non-negotiable on every terminal write
-(`app/conductor/policy.py`, `app/worker/claim.py`): the route filters on it, and so does the metrics writer that feeds
-the counters the cards now carry.
+`GET /api/simulation/{id}/decisions` is **unchanged and still served** — `scripts/verify.sh` asserts against it, and it
+remains the honest way to inspect a run. What was removed is the decision to put it on the page, not the data. That is
+also why `completed_at` is still non-negotiable on every terminal write (`app/conductor/policy.py`,
+`app/worker/claim.py`): the route filters on it, and so does the metrics writer that feeds the counters the cards now
+carry.
 
 ### Visual language
 
@@ -651,15 +697,14 @@ Postgres, not application cleverness.)
 *Gain:* workers hold zero policy logic, and the buffer depth *is* the granularity of fairness — a deep buffer would make
 the attempts-share chart show bursts of one consumer at a time, which is the opposite of what we claim to prove.
 
-**5. Leases are recorded but never reclaimed.**
-Workers stamp `leased_by` / `lease_expires_at`; no reaper runs.
-*Cost:* a worker that dies mid-attempt strands its `in_flight` rows and permanently burns that consumer's concurrency
-slots. This is a genuine bug, not a simplification.
-*Gain:* an hour, spent on the fairness and policy story instead. Justified by blast radius rather than by hand-waving:
-`simulation_id` namespacing confines the damage to a single ~45-second run, Reset clears it, and the fix is a known
-~20-line function against columns that are already written. The design that *would* be correct — timeouts replacing
-liveness detection, so the correctness path never needs a failure detector — is documented in §Leases and listed under
-Future Work.
+**5. Lease expiry as the only failure detector.**
+Reclamation triggers on `lease_expires_at < now()`, never on a worker being known dead.
+*Cost:* a worker's work sits idle for up to a full lease TTL after it dies, even when the process registry already knows
+it is gone. Reclamation is correct rather than prompt.
+*Gain:* the correctness path has no failure detector to be wrong. Nothing in it reads the process registry, so a
+partition, a paused heartbeat or a mis-tuned liveness window can cost throughput and can never cost a double send. The
+optimization — reclaim a known-dead worker's leases immediately — is available on top and listed under Future Work, but
+the timeout stays the source of truth underneath it.
 
 **6. Fairness as a sliding-window query over `attempt`, not an in-memory budget.**
 *Cost:* a query every conductor loop; at real scale this is the first thing that needs materializing into Redis.
@@ -679,13 +724,14 @@ on modest clock skew.
 *Gain:* it forced the production-correct shape everywhere — derived clock, sliding-window fairness, leases, leader
 election. In a single process every one of those could have stayed an in-memory shortcut.
 
-**8b. The whole worker-failure story is scoped out.**
-Simulated process kills and lease reclamation were cut together, since neither is much use without the other.
-*Cost:* the system tolerates worker death worse than the design describes, and a reviewer reads about recovery instead
-of watching it. Together with #5 this is the largest concession to the time budget.
-*Gain:* roughly two hours, spent on the fairness and policy story the whole thesis rests on. Leader election survived
-the cut because it is ~10 lines and answers the loudest architectural objection; worker recovery did not, because it
-needs a reaper, an index, a chaos control, and UI to be worth anything.
+**8b. A kill button, in the product rather than in a test.**
+`POST /api/process/{id}/kill` is a chaos control shipped in the UI, not a fixture.
+*Cost:* a destructive operation on the process registry with no authentication in front of it, and a flag on a table
+that is otherwise purely observational.
+*Gain:* recovery is watched rather than described. It is also the only way to reach the state the reaper exists for —
+an ungraceful death mid-batch — which means the recovery path is exercised on the real deployment rather than only
+under `pytest`. Reclamation and the kill control were built together because neither is worth much without the other:
+a reaper nobody can trigger is a claim, and a kill button with no reaper behind it is just damage.
 
 **9. Ingest lives in the API, not the conductor.**
 *Cost:* none material; fan-out is cheap deterministic work with no scheduling judgment in it.
@@ -720,9 +766,8 @@ Features out of scope for the prototype, in rough priority order.
 | Feature | Why |
 |---|---|
 | **Multi-tenancy** | `simulation_id` becomes `tenant_id`/`provider_id` — already threaded through every table, so it's auth and isolation work, not a schema change |
-| **Lease reclamation** | The reaper: expired leases return to `pending` with an `attempt` row recording `lease_expired`. ~20 lines and one partial index against columns already being written. The most load-bearing thing on this list — without it a dead worker permanently costs its consumer capacity |
-| **Chaos controls** | Kill/revive buttons forcing ungraceful death, so reclamation and leader failover can be watched rather than described. Only meaningful once reclamation exists |
-| **Fast lease reclamation** | Use worker heartbeats to reclaim a known-dead worker's leases immediately instead of waiting out the TTL. Strictly an optimization on top of expiry — the timeout stays the source of truth |
+| **Fast lease reclamation** | Use worker heartbeats to reclaim a known-dead worker's leases immediately instead of waiting out the TTL. Strictly an optimization on top of expiry — the timeout stays the source of truth, so a wrong failure detector costs throughput and never correctness |
+| **Per-consumer lease duration** | The TTL is one global setting. A consumer that legitimately holds a connection for a minute and one that answers in 50ms want very different answers to "how long before we assume the worker is gone" |
 | **Per-consumer retry policy** | Backoff base, cap, and max attempts are global today. Real consumers have different tolerances |
 | **Payload filter expressions** | Subscribe to `invoice.paid` *where* `amount > 10000`, evaluated at the same dispatch-time seam as existing policies |
 | **More coalesce strategies** | `batch_by_key` (deliver the run as an array), `first_by_key` |

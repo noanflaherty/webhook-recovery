@@ -2,15 +2,19 @@
 
 Register in ``process``, heartbeat, run a loop body until told to stop, drain.
 
-**The drain is the point.** Lease reaping is out of scope, so a worker that dies
-mid-attempt strands its ``in_flight`` rows permanently and each stranded row
-permanently costs that consumer a concurrency slot. Handling SIGTERM by letting
-the current iteration *finish* means the one shutdown path we control -- a
-deploy, a ``docker compose stop``, a Railway restart -- strands nothing. Only an
-ungraceful kill does, and chaos controls are out of scope, so that path is now
-hard to hit even by accident.
+**The drain is the point.** A worker killed mid-attempt strands its
+``in_flight`` rows, and each one costs its consumer a concurrency slot until the
+lease expires. Handling SIGTERM by letting the current iteration *finish* means
+the shutdown paths the system controls -- a deploy, a ``docker compose stop``, a
+Railway restart -- strand nothing and wait for nothing.
+:mod:`app.conductor.reaper` covers the paths it does not control; the drain is
+what keeps those rare.
 
-Fifteen lines that materially shrink the cost of a known scope cut.
+**The crash flag is the deliberate exception.** ``process.crash_requested`` asks
+a process to die *without* draining, which is the only way to produce a stranded
+lease on purpose. The runner just raises it as an event: each loop body picks
+the moment to act, because the moment is what makes the death worth simulating
+-- mid-batch for a worker, holding the advisory lock for a conductor.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import uuid
 from collections.abc import Awaitable, Callable
@@ -49,6 +54,13 @@ _REGISTER_RETRY_MAX_S = 5.0
 #: a hot spin against the database.
 _ERROR_BACKOFF_S = 1.0
 
+#: What an honoured crash request does. ``os._exit`` and not ``sys.exit``: it
+#: skips ``finally`` blocks, atexit hooks, the drain, ``deregister_process`` and
+#: the teardown seam, which is exactly the ungraceful path a graceful stop
+#: exists to avoid. Injectable only so a test can observe the call instead of
+#: taking the interpreter down with it.
+CrashAction = Callable[[int], None]
+
 
 class ProcessRunner:
     """Boot, heartbeat, loop, drain."""
@@ -61,6 +73,7 @@ class ProcessRunner:
         interval_s: float,
         process_id: uuid.UUID | None = None,
         on_shutdown: Teardown | None = None,
+        crash_action: CrashAction = os._exit,
     ) -> None:
         self.kind = kind
         self.loop_body = loop_body
@@ -68,6 +81,10 @@ class ProcessRunner:
         self.process_id = process_id or uuid.uuid4()
         self.on_shutdown = on_shutdown
         self.stop = asyncio.Event()
+        #: Raised by the heartbeat when this process's row says to die. Read by
+        #: the loop body, which owns the timing; see :meth:`die`.
+        self.crash = asyncio.Event()
+        self._crash_action = crash_action
         self._is_leader = False
 
     def mark_leader(self, value: bool) -> None:
@@ -79,6 +96,18 @@ class ProcessRunner:
         nothing else.
         """
         self._is_leader = value
+
+    def die(self) -> None:
+        """Honour a crash request, right now, from wherever the loop body is.
+
+        Deliberately not ``request_stop``. A graceful stop would drain the
+        current iteration and release everything cleanly, which is the opposite
+        of what a simulated kill is for: the point is to leave a lease behind
+        for the reaper and, for a conductor, to drop the advisory lock's session
+        without releasing the lock.
+        """
+        log.warning("%s %s exiting on request, without draining", self.kind.value, self.process_id)
+        self._crash_action(1)
 
     def request_stop(self, signum: int | None = None) -> None:
         if not self.stop.is_set():
@@ -130,7 +159,12 @@ class ProcessRunner:
         self.install_signal_handlers()
         await self._register_when_ready()
         heartbeat_task = asyncio.create_task(
-            heartbeat_loop(self.process_id, self.stop, is_leader=lambda: self._is_leader),
+            heartbeat_loop(
+                self.process_id,
+                self.stop,
+                is_leader=lambda: self._is_leader,
+                on_crash_requested=self.crash.set,
+            ),
             name=f"heartbeat-{self.kind.value}",
         )
         log.info("%s %s running", self.kind.value, self.process_id)

@@ -222,7 +222,7 @@ class ProcessRead(ApiModel):
     """A live process. Observability only.
 
     Only rows that heartbeat inside the liveness window are returned; liveness
-    is a read-time filter, never a reaper.
+    is a read-time filter: nothing reclaims a stale row in order to decide it.
     """
 
     id: uuid.UUID
