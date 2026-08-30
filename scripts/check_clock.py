@@ -3,7 +3,7 @@
 
 This is the Phase 0 check worth doing carefully: the clock is the only output
 that three separate processes have to agree on, and a wrong answer is invisible
-until Phase 2, where it presents as a *fairness* bug rather than a clock bug.
+until Phase 3, where it presents as a *fairness* bug rather than a clock bug.
 
 **Latency-aware on purpose.** The naive version of this check -- read, sleep one
 second, read, assert the delta is ~20 -- only holds on localhost. Every read is

@@ -61,3 +61,47 @@ export function formatVirtual(virtualS: number): string {
 export function toVirtualSeconds(iso: string): number {
   return (Date.parse(iso) - VIRTUAL_EPOCH_ZERO_MS) / 1000
 }
+
+
+/**
+ * What each consumer is *for*, mirrored from `app.core.scenario.CONSUMERS`.
+ *
+ * The cast is not three arbitrary customers -- each one isolates a single
+ * variable, and the numbers on a card mean very little without knowing which.
+ * Acme's backlog draining slowly is not a problem to fix; it is the control.
+ * Clover's tiny backlog is not an accident; it is the entire fairness case.
+ *
+ * Keyed by name because the API contract is frozen and this is presentation
+ * copy, not data: adding a `role` field to `ConsumerRead` would be a breaking
+ * change to a contract two tracks were built against, to carry a sentence that
+ * never varies per run.
+ */
+export interface ConsumerRole {
+  /** One word, for the chip beside the name. */
+  label: string
+  /** One sentence: what this consumer is demonstrating. */
+  blurb: string
+}
+
+export const CONSUMER_ROLES: Record<string, ConsumerRole> = {
+  'Acme Analytics': {
+    label: 'baseline',
+    blurb:
+      'Subscribes to all four event types and sets no policies, so every queued event has to be delivered. The control the other two are read against.',
+  },
+  'Bolt Billing': {
+    label: 'policy',
+    blurb:
+      'The same subscriptions as Acme, but it coalesces subscription churn and drops balances older than 120s — so its backlog shrinks before it is ever sent, while every payment still lands.',
+  },
+  'Clover CRM': {
+    label: 'fairness',
+    blurb:
+      'One low-volume event type, so its backlog is a fraction of the others’. With fair drain on it catches up in seconds; with it off it waits behind them.',
+  },
+}
+
+/** The role for a consumer, or `null` for a cast this build does not know. */
+export function roleFor(name: string): ConsumerRole | null {
+  return CONSUMER_ROLES[name] ?? null
+}

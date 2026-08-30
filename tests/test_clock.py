@@ -3,7 +3,7 @@
 The pause/resume rebase is the one piece of arithmetic in Phase 0 that is easy
 to get wrong and invisible when it is: the clock keeps returning plausible
 timestamps either way. It is also the only Phase 0 output that three separate
-processes have to agree on, and a wrong answer here surfaces in Phase 2 as a
+processes have to agree on, and a wrong answer here surfaces in Phase 3 as a
 *fairness* bug rather than a clock bug.
 
 Every test drives wall time explicitly through ``at_wall`` rather than sleeping,

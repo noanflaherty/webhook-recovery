@@ -123,7 +123,12 @@ export default function App() {
           /* already gone, or never existed -- either way, on to the new one */
         }
       }
-      const created = await createRun()
+      // Reset starts on the *naive* arm rather than inheriting the toggle or
+      // the server's default. A fresh run is the "before" picture: you want to
+      // watch FIFO starve the small consumer and then turn fairness on, which
+      // means the interesting flip is on -> visible, not off -> nothing. It
+      // also makes Reset mean one thing rather than "whatever it was last".
+      const created = await createRun({ fair_drain_enabled: false })
       go({ kind: 'live', simId: created.id })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
@@ -187,7 +192,11 @@ export default function App() {
       {(actionError ?? run.error) && <p className="error">{actionError ?? run.error}</p>}
 
       <BacklogChart buckets={run.buckets} consumers={run.consumerRefs} />
-      <ShareChart buckets={run.buckets} consumers={run.consumerRefs} />
+      <ShareChart
+        buckets={run.buckets}
+        consumers={run.consumerRefs}
+        fairDrainFlips={run.fairDrainFlips}
+      />
       <ConsumerCards consumers={run.consumers} refs={run.consumerRefs} buckets={run.buckets} />
       <DecisionFeed decisions={run.decisions} sourceKind={source.kind} />
       <ProcessStrip processes={run.processes} sourceKind={source.kind} />

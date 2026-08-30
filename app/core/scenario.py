@@ -11,7 +11,7 @@ to agree about. ``is_outage`` is the conductor's admission gate and
 producer's event mix -- is a constants table with one function that writes it.
 The phase plan put seeding in Phase 3, but fan-out reads ``subscription``: with
 no rows the walking skeleton produces nothing and cannot walk. Policies come
-along for free and sit unread until Phase 2 evaluates them.
+along for free, and Phase 3's conductor reads them at dispatch time.
 
 Rates are per *virtual* second and are back-derived from the committed frontend
 fixtures, so the charts a reviewer sees against real data have the same shape as
@@ -139,16 +139,33 @@ class EventTypeSpec:
     key_pool: int | None
 
 
+#: The mix is weighted toward the two policy-bearing types on purpose.
+#:
+#: The second claim is that a consumer's own policy shrinks its backlog before
+#: any of it is sent, and that claim is only as visible as the share of the
+#: stream a policy can actually act on. At an even split across four types, only
+#: ~58% of Bolt's stream was droppable and its backlog line ran nearly parallel
+#: to Acme's -- the mechanism worked and did not *read*.
+#:
+#: The total is held at exactly 6.05/virtual s, unchanged, so peak backlog,
+#: drain time and the `global_attempts_per_s` contention ratio are all
+#: untouched: this moves volume between types rather than adding any.
 EVENT_MIX: Final[tuple[EventTypeSpec, ...]] = (
     # Money moved. Unique key, so `latest_by_key` could never collapse it even
     # if someone configured it -- the guarantee is structural, not just policy.
-    EventTypeSpec("payment_intent.succeeded", 1.75, "pi", None),
+    # Kept high enough that "every payment still landed" is a claim about
+    # hundreds of deliveries rather than a rounding error, because that is the
+    # half that makes coalescing a feature instead of data loss.
+    EventTypeSpec("payment_intent.succeeded", 1.10, "pi", None),
     # Coalesce candidate: a small pool of subscriptions churning, where only the
-    # latest state of each is worth delivering.
-    EventTypeSpec("customer.subscription.updated", 1.75, "sub", 40),
-    # Staleness candidate: a ten-minute-old balance is worthless.
-    EventTypeSpec("balance.available", 1.75, "acct", 25),
-    # Low volume, and routed to Clover alone.
+    # latest state of each is worth delivering. A tighter pool at a higher rate
+    # is the same fact stated harder -- twenty subscriptions changing ~35 times
+    # each across a five-minute outage, of which twenty states matter.
+    EventTypeSpec("customer.subscription.updated", 2.30, "sub", 20),
+    # Staleness candidate: a stale balance is worthless, and the outage
+    # guarantees most of these are stale before the provider is back.
+    EventTypeSpec("balance.available", 1.85, "acct", 25),
+    # Low volume, and the one type Clover subscribes to.
     EventTypeSpec("invoice.paid", 0.80, "in", None),
 )
 
@@ -203,7 +220,12 @@ CONSUMERS: Final[tuple[ConsumerSpec, ...]] = (
         subscribes_to=ALL_EVENT_TYPES,
         policies=(
             PolicySpec("customer.subscription.updated", coalesce=CoalesceMode.LATEST_BY_KEY),
-            PolicySpec("balance.available", max_staleness_s=120.0),
+            # One minute, not two. The outage is five minutes long, so a 120s
+            # bound leaves the newest ~40% of the backlog still fresh at the
+            # moment the provider returns; 60s means Bolt is asking for the
+            # current balance rather than a replay of the last five minutes of
+            # them, which is what a cash-position feed actually wants.
+            PolicySpec("balance.available", max_staleness_s=60.0),
             PolicySpec("payment_intent.succeeded"),
         ),
     ),

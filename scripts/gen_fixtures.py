@@ -140,7 +140,7 @@ def _jitter(rng: random.Random, value: float, spread: float = 0.12) -> float:
 def fair_allocate(demand: dict[int, float], budget: float) -> dict[int, float]:
     """Split a contended budget by weight, work-conserving.
 
-    This is the shape of the thing Phase 2 has to get right, and the reason the
+    This is the shape of the thing Phase 3 has to get right, and the reason the
     fixture bothers to model it rather than assign each consumer a fixed drain
     rate: the **attempts-share chart is the fairness proof**. With equal weights
     and all three backlogged the segments must be equal thirds; once Clover

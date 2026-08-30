@@ -1,7 +1,7 @@
 """Proof that the transactional session fixture actually works.
 
 Not a test of the product -- a test of the test infrastructure. It exists
-because a rollback fixture that has never been run is a guess, and Phase 2 is
+because a rollback fixture that has never been run is a guess, and Phase 3 is
 the wrong time to find out that its scheduler tests are leaking rows into each
 other.
 

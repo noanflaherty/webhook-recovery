@@ -281,6 +281,14 @@ h2 {
   flex: none;
 }
 
+/* The one-line "what is this consumer for" note under each card's name. */
+.card .role {
+  margin: -0.15rem 0 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 .card dl {
   display: grid;
   grid-template-columns: 6.5rem 1fr;

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.conductor.admission import compute_budget, mark_ready, select_candidates
 from app.conductor.leader import LeaderLock
 from app.conductor.metrics import MetricsWriter, read_gauges, total_backlog
+from app.conductor.policy import apply_drops, load_policies
 from app.core.clock import SimulationClockConfig, VirtualClock
 from app.core.enums import SimStatus
 from app.core.models import Simulation
@@ -42,6 +43,7 @@ _SIM_COLUMNS = (
     Simulation.resumed_at_wall,
     Simulation.paused_at_virtual,
     Simulation.speed_multiplier,
+    Simulation.fair_drain_enabled,
     Simulation.global_attempts_per_s,
     Simulation.outage_override,
 )
@@ -149,14 +151,32 @@ class Conductor:
         if budget.slots <= 0:
             return
 
-        candidates = await select_candidates(conn, sim.id, now, budget.slots)
-        admitted = await mark_ready(conn, candidates, now)
-        if admitted:
+        # Read every pass rather than held, which is what makes flipping the
+        # toggle a live change of slope on the chart rather than a restart.
+        selection = await select_candidates(
+            conn,
+            sim.id,
+            now,
+            budget=budget,
+            gauges=gauges,
+            policies=await load_policies(conn, sim.id),
+            fair_drain=sim.fair_drain_enabled,
+        )
+
+        # Drops before admissions. Both are the same decision -- what this pass
+        # does with the work in front of it -- and a crash between them would
+        # otherwise leave a superseded delivery admitted and about to be sent.
+        await apply_drops(conn, selection.drops, now)
+        admitted = await mark_ready(conn, selection.admit, now)
+
+        if admitted or selection.drops:
             log.debug(
-                "admitted %d (buffer=%d rate=%d) at virtual %.1fs",
+                "admitted %d, dropped %d (buffer=%d rate=%d fair=%s) at virtual %.1fs",
                 admitted,
+                len(selection.drops),
                 budget.buffer_slots,
                 budget.rate_slots,
+                sim.fair_drain_enabled,
                 elapsed,
             )
 

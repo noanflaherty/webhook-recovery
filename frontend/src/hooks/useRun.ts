@@ -43,6 +43,18 @@ const CLOCK_MS = 100
  */
 const CURSOR_OVERLAP = 2
 
+/**
+ * One observed flip of the fair-drain toggle.
+ *
+ * `enabled` is the state it moved *into*, because that is what the reader wants
+ * off the chart: an unlabelled marker tells you the scheduler changed but not
+ * which way, which is the half that carries the argument.
+ */
+export interface FairDrainFlip {
+  t: number
+  enabled: boolean
+}
+
 /** Everything that belongs to one run, so switching runs is one assignment. */
 interface Snapshot {
   simulation: SimulationRead | null
@@ -50,6 +62,16 @@ interface Snapshot {
   buckets: MetricsBucket[]
   decisions: DecisionRead[]
   processes: ProcessRead[]
+  /**
+   * Each observed change to `fair_drain_enabled`, and which way it went.
+   *
+   * Derived from the polled state rather than from the click, so a flip made
+   * from another tab or from `curl` marks the chart too -- and so it needs no
+   * new contract field and no migration. Nothing persists it: a refresh starts
+   * the list empty, which is honest, because the server does not record when
+   * the toggle moved.
+   */
+  fairDrainFlips: FairDrainFlip[]
   error: string | null
   /** True until the first simulation response lands. */
   loading: boolean
@@ -61,6 +83,7 @@ const EMPTY: Snapshot = {
   buckets: [],
   decisions: [],
   processes: [],
+  fairDrainFlips: [],
   error: null,
   loading: true,
 }
@@ -90,6 +113,7 @@ export function useRun(source: DataSource | null): RunState {
   const [virtualNowS, setVirtualNowS] = useState(0)
   const anchorRef = useRef<ClockAnchor>(STOPPED)
   const cursorRef = useRef(-1)
+  const fairDrainRef = useRef<boolean | null>(null)
 
   // Reset during render rather than in an effect. Bucket indices from one
   // simulation mean nothing in another, so the old run's data must not survive
@@ -119,6 +143,7 @@ export function useRun(source: DataSource | null): RunState {
     // the effect commits long before the 100ms tick could fire.
     cursorRef.current = -1
     anchorRef.current = STOPPED
+    fairDrainRef.current = null
     if (!source) return
     let cancelled = false
 
@@ -159,7 +184,25 @@ export function useRun(source: DataSource | null): RunState {
         const simulation = await source.getSimulation()
         if (cancelled) return
         anchorTo(simulation)
-        setSnapshot((s) => ({ ...s, simulation, loading: false, error: null }))
+
+        // The first response establishes the baseline; only a later
+        // disagreement with it is a flip.
+        const was = fairDrainRef.current
+        const flipped = was !== null && was !== simulation.fair_drain_enabled
+        fairDrainRef.current = simulation.fair_drain_enabled
+
+        setSnapshot((s) => ({
+          ...s,
+          simulation,
+          fairDrainFlips: flipped
+            ? [
+                ...s.fairDrainFlips,
+                { t: simulation.virtual_now_s, enabled: simulation.fair_drain_enabled },
+              ]
+            : s.fairDrainFlips,
+          loading: false,
+          error: null,
+        }))
       }, SIMULATION_MS),
 
       start(async () => {

@@ -96,6 +96,15 @@ class Settings(BaseSettings):
     #: workers never starve waiting on the conductor.
     ready_buffer_depth_multiplier: float = 1.5
     fairness_window_virtual_s: float = 5.0
+    #: How many candidates a pass fetches per admittable slot.
+    #:
+    #: Fairness rations attempts; a policy drop is not an attempt. So a pass has
+    #: to look past what it could admit to find work that survives policy --
+    #: otherwise a consumer whose backlog is mostly superseded (Bolt's, during
+    #: recovery) can never fill its share. The extra rows are not wasted: policy
+    #: condemns them now rather than next pass, which is what makes a coalesced
+    #: backlog collapse rather than trickle.
+    admission_overfetch: int = 8
     metrics_bucket_virtual_s: float = 1.0
     #: Ceiling on how many buckets one metrics pass will backfill. A conductor
     #: gap (failover, a redeploy) is caught up over several passes rather than

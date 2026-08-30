@@ -1,6 +1,6 @@
 """Test fixtures.
 
-The session fixture exists now so that Phase 2's fairness tests -- the ones that
+The session fixture exists now so that Phase 3's fairness tests -- the ones that
 genuinely earn their keep, because a subtly wrong scheduler still draws a
 plausible chart -- are a file to add rather than infrastructure to build under
 time pressure.
