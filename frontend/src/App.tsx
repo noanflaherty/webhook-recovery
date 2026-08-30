@@ -191,13 +191,20 @@ export default function App() {
 
       {(actionError ?? run.error) && <p className="error">{actionError ?? run.error}</p>}
 
+      {/*
+        The cast comes first. The two charts are unreadable until you know who
+        the three lines are and what each one is there to demonstrate -- that
+        Acme's slow drain is the control rather than a defect, and that Clover's
+        small backlog is the entire fairness case. Introduce the cast, then show
+        what happens to it.
+      */}
+      <ConsumerCards consumers={run.consumers} refs={run.consumerRefs} buckets={run.buckets} />
       <BacklogChart buckets={run.buckets} consumers={run.consumerRefs} />
       <ShareChart
         buckets={run.buckets}
         consumers={run.consumerRefs}
         fairDrainFlips={run.fairDrainFlips}
       />
-      <ConsumerCards consumers={run.consumers} refs={run.consumerRefs} buckets={run.buckets} />
       <DecisionFeed decisions={run.decisions} sourceKind={source.kind} />
       <ProcessStrip processes={run.processes} sourceKind={source.kind} />
     </main>
