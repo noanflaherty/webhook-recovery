@@ -34,7 +34,9 @@ class DeliveryState(StrEnum):
     FAILED = "failed"
 
 
-#: States a delivery can still leave. Anything else is terminal.
+#: Backlog: work that still has somewhere to go. The one definition of it --
+#: the consumer cards and the metrics writer must agree, or the chart and the
+#: card disagree about the same number.
 ACTIVE_DELIVERY_STATES: frozenset[DeliveryState] = frozenset(
     {DeliveryState.PENDING, DeliveryState.READY, DeliveryState.IN_FLIGHT}
 )

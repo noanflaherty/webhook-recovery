@@ -42,6 +42,7 @@ from app.core.clock import (
     wall_now,
 )
 from app.core.enums import (
+    ACTIVE_DELIVERY_STATES,
     TERMINAL_DELIVERY_STATES,
     DeliveryState,
     ProcessKind,
@@ -228,12 +229,7 @@ async def list_consumers(
         by_consumer.setdefault(consumer_id, {})[state] = count
 
     def backlog_of(states: dict[str, int]) -> int:
-        # Backlog is work that still has somewhere to go.
-        return (
-            states.get(DeliveryState.PENDING, 0)
-            + states.get(DeliveryState.READY, 0)
-            + states.get(DeliveryState.IN_FLIGHT, 0)
-        )
+        return sum(states.get(state, 0) for state in ACTIVE_DELIVERY_STATES)
 
     return [
         ConsumerRead(

@@ -1,9 +1,9 @@
 """Async engine, sessionmaker, and the session context manager.
 
-One engine per process. The conductor will later need a *dedicated* connection
-for its advisory lock -- held on the same session it writes through, so that
-losing the lock means losing the ability to write and fencing is automatic
-rather than something we implement. :func:`dedicated_connection` is that seam.
+One engine per process. The conductor needs a *dedicated* connection for its
+advisory lock -- held on the same session it writes through, so that losing the
+lock means losing the ability to write and fencing is automatic rather than
+something we implement. :func:`dedicated_connection` is that seam.
 """
 
 from __future__ import annotations
@@ -73,9 +73,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 async def dedicated_connection() -> AsyncIterator[AsyncConnection]:
     """A connection checked out for the lifetime of the caller.
 
-    The conductor's leader lock (Phase 1) lives here: ``pg_try_advisory_lock``
-    is tied to a Postgres *session*, so the lock and the writes it fences must
-    share one connection.
+    The conductor's leader lock lives here: ``pg_try_advisory_lock`` is tied to
+    a Postgres *session*, so the lock and the writes it fences must share one
+    connection. Conductor writes go through ``AsyncSession(bind=conn)`` on this
+    connection, never ``session_scope()`` -- otherwise losing the lock does not
+    lose the ability to write, and the fencing claim is false.
     """
     async with get_engine().connect() as conn:
         yield conn

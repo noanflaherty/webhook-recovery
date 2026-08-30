@@ -40,7 +40,11 @@ def phase_at(virtual_s: float, *, outage_override: bool | None = None, done: boo
 
 
 def is_outage(virtual_s: float, *, outage_override: bool | None = None) -> bool:
-    """Whether the delivery pipeline is down. Read by the conductor in Phase 1+."""
+    """Whether the delivery pipeline is down.
+
+    The conductor skips admission entirely while this is true, which is what
+    makes backlogs climb through the outage and drain after it.
+    """
     if outage_override is not None:
         return outage_override
     return OUTAGE_STARTS_AT_S <= virtual_s < OUTAGE_ENDS_AT_S

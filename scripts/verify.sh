@@ -54,7 +54,18 @@ print(sum(1 for p in json.load(sys.stdin) if p["heartbeat_age_s"] > 15))
 # --------------------------------------------------------------------------
 echo
 echo "== schema"
-if docker compose ps -q postgres >/dev/null 2>&1 && [ -n "$(docker compose ps -q postgres 2>/dev/null)" ]; then
+# Only when the target is the local stack. These read the compose database
+# directly, so running them against a deployed URL would silently verify
+# localhost and report it as if it were the deployment.
+case "$BASE" in
+  http://localhost:*|http://127.0.0.1:*) LOCAL_TARGET=1 ;;
+  *) LOCAL_TARGET=0 ;;
+esac
+
+if [ "$LOCAL_TARGET" = "0" ]; then
+  echo "   (remote target -- schema is verified through the API's own migration,"
+  echo "    which ran at deploy time; skipping direct psql checks)"
+elif docker compose ps -q postgres >/dev/null 2>&1 && [ -n "$(docker compose ps -q postgres 2>/dev/null)" ]; then
   TABLES=$(docker compose exec -T postgres psql -qtA -U postgres -d webhook_recovery -c \
     "SELECT count(*) FROM information_schema.tables
       WHERE table_schema = 'public' AND table_name <> 'alembic_version';" | tr -d '[:space:]')
@@ -74,32 +85,7 @@ fi
 # --------------------------------------------------------------------------
 echo
 echo "== clock"
-SIM=$(curl -sf -X POST "$BASE/api/simulation" -H 'content-type: application/json' -d '{}' | field id)
-echo "   simulation $SIM"
-
-patch() { curl -sf -X PATCH "$BASE/api/simulation/$SIM" -H 'content-type: application/json' -d "$1" >/dev/null; }
-read_s() { curl -sf "$BASE/api/simulation/$SIM" | field virtual_now_s; }
-
-patch '{"speed_multiplier":20}'
-A=$(read_s); sleep 1; B=$(read_s)
-python3 -c "
-d = $B - $A
-print('   two reads one real second apart at 20x: %+.2f virtual s' % d)
-raise SystemExit(0 if 18 < d < 23 else 1)
-" && pass "virtual time advances at the multiplier" \
-  || fail "virtual time did not advance at ~20x"
-
-patch '{"status":"paused"}'
-P=$(read_s); sleep 1; Q=$(read_s)
-[ "$P" = "$Q" ] && pass "frozen while paused" || fail "clock moved while paused ($P -> $Q)"
-
-patch '{"status":"running"}'
-R=$(read_s)
-python3 -c "
-j = $R - $Q
-print('   resume jump: %+.2f virtual s' % j)
-raise SystemExit(0 if j < 2 else 1)
-" && pass "no jump across the pause" || fail "time jumped across the pause"
+if python3 ./scripts/check_clock.py "$BASE"; then :; else failures=$((failures + $?)); fi
 
 # --------------------------------------------------------------------------
 echo

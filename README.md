@@ -12,6 +12,8 @@ Rationale: [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md)
 
 ## Status: Phase 0 — foundations and frozen contracts
 
+**Deployed:** https://api-production-7c78a.up.railway.app
+
 The schema, the clock, the API response shapes and the deployment topology exist. **No business logic
 does**: the conductor and worker loops are empty on purpose. Phase 0 builds the parts that are expensive
 to change and nothing that is interesting to demo.
@@ -53,7 +55,11 @@ make verify                      # health, processes, schema, clock, served bund
 ```
 
 `make verify` runs [`scripts/verify.sh`](scripts/verify.sh), which is the Phase 0 exit criteria as
-executable checks. Point it at a deployed URL with `make verify API=https://…`.
+executable checks. It works against the deployment too:
+
+```bash
+EXPECTED_PROCESSES=3 ./scripts/verify.sh https://api-production-7c78a.up.railway.app
+```
 
 ```
 == health          api up, database reachable
@@ -67,6 +73,19 @@ executable checks. Point it at a deployed URL with `make verify API=https://…`
 The clock is the check worth reading carefully. It is the only Phase 0 output that three separate
 processes have to agree on, and a wrong answer there is invisible until Phase 2, where it presents as a
 *fairness* bug rather than a clock bug.
+
+[`scripts/check_clock.py`](scripts/check_clock.py) is deliberately **latency-aware**. The naive form of
+this check — read, sleep a second, read, assert ~20 — only holds on localhost: every read is a round
+trip, and at 20x a 265ms RTT is worth five virtual seconds, so it fails against a deployed URL on a
+clock that is perfectly correct. It asserts the invariant that holds everywhere instead, timestamping
+each sample at the midpoint of its request window:
+
+```
+virtual elapsed  ==  wall elapsed  x  speed_multiplier
+```
+
+Against Railway that lands within 0.1 virtual seconds — which is a much stronger statement about the
+derived clock than the localhost version ever was.
 
 ## Layout
 
@@ -85,7 +104,7 @@ app/
   conductor/      empty loop (Phase 1: leader election, admission, metrics)
   worker/         empty loop (Phase 1: SKIP LOCKED claim, lease, attempt)
 alembic/          one migration
-scripts/          gen_fixtures.py, verify.sh
+scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh
 frontend/         Vite + React stub, and the committed fixtures Track B builds against
 ```
 
@@ -157,7 +176,7 @@ The topology is [`.railway/railway.ts`](.railway/railway.ts) — Infrastructure-
 CLI:
 
 ```bash
-railway login                                   # browser-based, run it yourself
+railway login                                   # browser-based
 railway init --name webhook-recovery
 railway add --database postgres
 railway add --service api --variables 'DATABASE_URL=${{Postgres.DATABASE_URL}}'   # and conductor, worker
@@ -189,12 +208,22 @@ race the one-shot step exists to prevent. Running it in the api's start command 
 single replica — keeps the guarantee that migrations run once from one place, and has the side benefit
 of being platform-independent rather than a Railway feature.
 
-**Boot ordering is not guaranteed.** Compose gates the workers on the migrate step with
-`service_completed_successfully`; Railway starts every service concurrently, so a worker can come up
-mid-migration and find no `process` table to insert into. The runner therefore retries registration with
-capped backoff rather than exiting — a transient condition should not become a crash-loop that can
-exhaust its restart budget before the migration finishes. This was found by deploying the skeleton,
-which is the entire reason Phase 0 deploys before there is any business logic to blame.
+### What deploying the skeleton actually caught
+
+All four were invisible locally, and none of them would have been distinguishable from a *business
+logic* bug had they surfaced in Phase 2. This is the entire argument for deploying before there is
+anything interesting to deploy.
+
+| Problem | How it presented | Fix |
+|---|---|---|
+| Boot ordering is not guaranteed | Worker came up mid-migration and died inserting into a table that did not exist yet | The runner retries registration with capped backoff — also the right production behaviour when a database blinks |
+| Railway's start-command parser does no POSIX expansion | `${PORT:-8000}` reached the process as that literal string; uvicorn exited on the unparseable port, silently | Everything shell-shaped moved into `scripts/start-api.sh`, which `docker run` can test |
+| Railway silently re-detects the builder | Worker built with Railpack → `No interpreter found for Python ==3.12.*`, for a repo with a working Dockerfile at its root | Pinned `RAILWAY_DOCKERFILE_PATH` |
+| Free tier caps replicas at 2 | Worker at 3 replicas rejected outright, with no logs at all | Railway runs 2; compose still runs 3. Workers are stateless, so this is a capacity difference and nothing else |
+
+Compose gates the workers on the migrate step with `service_completed_successfully`; Railway starts
+every service concurrently. Neither platform guarantees ordering, so the runner treats a missing schema
+as a transient condition to wait out rather than a reason to exit.
 
 ## Next
 
