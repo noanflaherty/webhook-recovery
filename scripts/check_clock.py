@@ -33,10 +33,6 @@ SPEED = 20.0
 #: Real seconds to let the clock run between samples. Long enough that the
 #: measurement dominates the noise, short enough to keep the check snappy.
 SAMPLE_GAP_S = 1.0
-#: A paused clock must be *exactly* frozen -- it is a stored value, not a
-#: computation, so there is no tolerance to allow here.
-PAUSE_TOLERANCE = 0.0
-
 GREEN, RED, RESET = "\033[32m", "\033[31m", "\033[0m"
 
 failures = 0
@@ -101,7 +97,8 @@ def main() -> int:
     paused_a = request(base, "GET", path)["virtual_now_s"]
     time.sleep(SAMPLE_GAP_S)
     paused_b = request(base, "GET", path)["virtual_now_s"]
-    if abs(paused_b - paused_a) <= PAUSE_TOLERANCE:
+    # Exact: a paused clock returns a stored value, not a computation.
+    if paused_b == paused_a:
         ok("frozen while paused")
     else:
         fail(f"clock moved while paused: {paused_a:.3f} -> {paused_b:.3f}")

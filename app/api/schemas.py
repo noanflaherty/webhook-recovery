@@ -16,7 +16,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import CoalesceMode, DeliveryState, ProcessKind, SimStatus
+from app.core.enums import DeliveryState, ProcessKind, SimStatus
 
 
 class ApiModel(BaseModel):
@@ -207,24 +207,11 @@ class ProcessRead(ApiModel):
     in_flight: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Policies (read-only in Phase 0; edited live as a Phase 3 stretch knob)
-# ---------------------------------------------------------------------------
-
-
-class DeliveryPolicyRead(ApiModel):
-    consumer_id: int
-    event_type: str
-    max_staleness_s: float | None
-    coalesce: CoalesceMode
-
-
 __all__ = [
     "ApiModel",
     "ConsumerRead",
     "DecisionRead",
     "DecisionsPage",
-    "DeliveryPolicyRead",
     "HealthRead",
     "MetricsBucket",
     "MetricsPage",

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.settings import normalize_database_url, sync_database_url
+from app.core.settings import normalize_database_url
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,3 @@ def test_normalize_preserves_password_special_characters() -> None:
 def test_normalize_rejects_non_postgres() -> None:
     with pytest.raises(ValueError, match="Not a Postgres URL"):
         normalize_database_url("mysql://u:p@h/db")
-
-
-def test_sync_url_swaps_the_driver() -> None:
-    assert sync_database_url("postgresql://u:p@h/db?sslmode=require") == "postgresql+psycopg2://u:p@h/db"

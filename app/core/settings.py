@@ -62,12 +62,6 @@ def normalize_database_url(url: str) -> str:
     return urlunsplit((scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
-def sync_database_url(url: str) -> str:
-    """The same URL with a synchronous driver, for tooling that needs one."""
-    normalized = normalize_database_url(url)
-    return normalized.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -126,5 +120,4 @@ __all__ = [
     "get_settings",
     "normalize_database_url",
     "settings",
-    "sync_database_url",
 ]

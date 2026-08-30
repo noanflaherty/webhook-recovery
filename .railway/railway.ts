@@ -38,21 +38,15 @@ export default defineRailway(() => {
     sizeMB: 500,
   });
 
-  // The start command is a single script rather than
-  // `alembic upgrade head && uvicorn ...`: Railway's start-command parser does
-  // its own interpolation and word splitting, so shell operators and
-  // `${VAR:-default}` are unreliable (the latter reaches the process as a
-  // literal string, and uvicorn exits on the unparseable port). Everything that
-  // needs a shell lives inside scripts/start-api.sh, where a real /bin/sh runs
-  // it -- and that script is testable with `docker run`, which the start
-  // command is not.
+  // A single script, not `alembic upgrade head && uvicorn ...`: Railway's
+  // start-command parser does its own interpolation and word splitting, so
+  // shell operators and `${VAR:-default}` are unreliable there. Keeping the
+  // shell inside the script also makes it testable with `docker run`.
   //
-  // Migrations run there, from this service only, which is pinned to one
-  // replica: the same "exactly once, from one place" guarantee compose gets
-  // from its one-shot migrate service. The IaC DSL has no preDeployCommand
-  // (Railway's own `config migrate` comments the field out), and a root
-  // railway.json would apply one to all three services and reintroduce the
-  // race the one-shot step exists to prevent.
+  // Migrations run from this service only, pinned to one replica -- the
+  // "exactly once, from one place" guarantee compose gets from its one-shot
+  // migrate step. The IaC DSL has no preDeployCommand, and a root railway.json
+  // would apply one to all three services and reintroduce that race.
   const api = service("api", {
     start: "./scripts/start-api.sh",
     healthcheck: "/api/health",
