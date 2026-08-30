@@ -38,10 +38,18 @@ for p in rows:
           % (p["kind"], p["hostname"], p["pid"], p["heartbeat_age_s"], leader))
 '
 N=$(printf '%s' "$PROCS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')
+# Report the actual mix rather than assuming it. Replica counts differ between
+# compose and the deployment, and a hardcoded "1 conductor + N workers" label
+# was printing a breakdown that contradicted the rows listed directly above it.
+BREAKDOWN=$(printf '%s' "$PROCS" | python3 -c '
+import sys, json, collections
+counts = collections.Counter(p["kind"] for p in json.load(sys.stdin))
+print(", ".join(f"{n} {kind}" + ("s" if n != 1 else "") for kind, n in sorted(counts.items())))
+')
 if [ "$N" -eq "$EXPECTED_PROCESSES" ]; then
-  pass "$N live (1 conductor + $((EXPECTED_PROCESSES - 1)) workers)"
+  pass "$N live ($BREAKDOWN)"
 else
-  fail "expected $EXPECTED_PROCESSES live processes, got $N"
+  fail "expected $EXPECTED_PROCESSES live processes, got $N ($BREAKDOWN)"
 fi
 
 STALE=$(printf '%s' "$PROCS" | python3 -c '
