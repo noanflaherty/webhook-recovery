@@ -1,0 +1,46 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-0000c0de0001",
+    "kind": "conductor",
+    "hostname": "conductor-1",
+    "pid": 1,
+    "started_at_wall": "2026-08-30T14:56:41.598963Z",
+    "last_heartbeat_wall": "2026-08-30T14:58:09.598963Z",
+    "is_leader": true,
+    "heartbeat_age_s": 2.53,
+    "in_flight": 0
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000b0b00001",
+    "kind": "worker",
+    "hostname": "worker-1",
+    "pid": 1,
+    "started_at_wall": "2026-08-30T14:56:41.598963Z",
+    "last_heartbeat_wall": "2026-08-30T14:58:09.598963Z",
+    "is_leader": false,
+    "heartbeat_age_s": 2.04,
+    "in_flight": 5
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000b0b00002",
+    "kind": "worker",
+    "hostname": "worker-2",
+    "pid": 2,
+    "started_at_wall": "2026-08-30T14:56:41.598963Z",
+    "last_heartbeat_wall": "2026-08-30T14:58:09.598963Z",
+    "is_leader": false,
+    "heartbeat_age_s": 0.65,
+    "in_flight": 5
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000b0b00003",
+    "kind": "worker",
+    "hostname": "worker-3",
+    "pid": 3,
+    "started_at_wall": "2026-08-30T14:56:41.598963Z",
+    "last_heartbeat_wall": "2026-08-30T14:58:09.598963Z",
+    "is_leader": false,
+    "heartbeat_age_s": 2.19,
+    "in_flight": 2
+  }
+]

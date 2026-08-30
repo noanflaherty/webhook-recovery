@@ -1,0 +1,946 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "webhook-recovery",
+    "summary": "Fair backlog burndown and consumer-defined replay policy after a provider outage.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Liveness plus a real database round-trip.\n\nDeliberately still 200 when the database is down: the process *is* up, and a\nplatform health check that restarts the api because Postgres blinked turns\none outage into two. The ``db`` field is what to alert on.",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthRead"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulation": {
+      "post": {
+        "summary": "Create Simulation",
+        "description": "Create a bare simulation. Consumer seeding is Phase 3.",
+        "operationId": "create_simulation_api_simulation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SimulationCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulation/{simulation_id}": {
+      "get": {
+        "summary": "Read Simulation",
+        "operationId": "read_simulation_api_simulation__simulation_id__get",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch Simulation",
+        "description": "Pause / resume / change speed / flip fair drain.\n\nPause, resume and speed change are all epoch rewrites -- one shared piece of\narithmetic in ``app.core.clock``, applied here and nowhere else. The order\nmatters: the speed change is applied to the *post-status* config, so\npausing and speeding up in one request behaves like doing them in sequence.",
+        "operationId": "patch_simulation_api_simulation__simulation_id__patch",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulationPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulation/{simulation_id}/consumer": {
+      "get": {
+        "summary": "List Consumers",
+        "description": "Consumers with their live counters.\n\nEmpty until Phase 3 seeds them -- a real read that legitimately returns\nnothing, rather than a stub that has to be deleted later.",
+        "operationId": "list_consumers_api_simulation__simulation_id__consumer_get",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConsumerRead"
+                  },
+                  "title": "Response List Consumers Api Simulation  Simulation Id  Consumer Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulation/{simulation_id}/metrics": {
+      "get": {
+        "summary": "Read Metrics",
+        "operationId": "read_metrics_api_simulation__simulation_id__metrics_get",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          },
+          {
+            "name": "since_bucket",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "Return buckets strictly greater than this.",
+              "default": -1,
+              "title": "Since Bucket"
+            },
+            "description": "Return buckets strictly greater than this."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulation/{simulation_id}/decisions": {
+      "get": {
+        "summary": "Read Decisions",
+        "description": "The most recent terminal decisions, newest first.\n\nDeliberately not cursored: ``delivery.id`` is assigned at ingest, not at\ncompletion, so a ``since_id`` cursor over it would silently skip decisions.",
+        "operationId": "read_decisions_api_simulation__simulation_id__decisions_get",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionsPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/process": {
+      "get": {
+        "summary": "List Processes",
+        "description": "Live workers and conductors.\n\nLiveness is this ``WHERE`` clause and nothing else. There is no reaper:\nstale rows from prior deploys accumulate harmlessly and are never read,\nwhich is what keeps \"nothing in the delivery path consults it\" literally\ntrue rather than approximately true.",
+        "operationId": "list_processes_api_process_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProcessRead"
+                  },
+                  "type": "array",
+                  "title": "Response List Processes Api Process Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ConsumerRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "weight": {
+            "type": "number",
+            "title": "Weight"
+          },
+          "concurrency_cap": {
+            "type": "integer",
+            "title": "Concurrency Cap"
+          },
+          "max_attempts_per_s": {
+            "type": "number",
+            "title": "Max Attempts Per S"
+          },
+          "backlog": {
+            "type": "integer",
+            "title": "Backlog",
+            "default": 0
+          },
+          "in_flight": {
+            "type": "integer",
+            "title": "In Flight",
+            "default": 0
+          },
+          "delivered": {
+            "type": "integer",
+            "title": "Delivered",
+            "default": 0
+          },
+          "expired": {
+            "type": "integer",
+            "title": "Expired",
+            "default": 0
+          },
+          "superseded": {
+            "type": "integer",
+            "title": "Superseded",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "caught_up_after_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caught Up After S"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "weight",
+          "concurrency_cap",
+          "max_attempts_per_s"
+        ],
+        "title": "ConsumerRead"
+      },
+      "DecisionRead": {
+        "properties": {
+          "delivery_id": {
+            "type": "integer",
+            "title": "Delivery Id"
+          },
+          "consumer_id": {
+            "type": "integer",
+            "title": "Consumer Id"
+          },
+          "consumer_name": {
+            "type": "string",
+            "title": "Consumer Name"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "entity_key": {
+            "type": "string",
+            "title": "Entity Key"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeliveryState"
+          },
+          "terminal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Reason"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "delivery_id",
+          "consumer_id",
+          "consumer_name",
+          "event_type",
+          "entity_key",
+          "state",
+          "terminal_reason",
+          "attempt_count",
+          "occurred_at",
+          "completed_at"
+        ],
+        "title": "DecisionRead",
+        "description": "One terminal decision, for the event feed.\n\nNewest-first, and the client *replaces* rather than appends -- see\n:class:`DecisionsPage`."
+      },
+      "DecisionsPage": {
+        "properties": {
+          "simulation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Simulation Id"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionRead"
+            },
+            "type": "array",
+            "title": "Decisions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "simulation_id",
+          "decisions"
+        ],
+        "title": "DecisionsPage",
+        "description": "Newest-first, replace-on-poll -- deliberately not a cursor.\n\n``delivery.id`` is assigned at *ingest*, not at completion, so it is not\nmonotonic in decision order: a ``?since_id=`` cursor over it would silently\nskip decisions. A properly completion-ordered cursor needs a dedicated\nsequence, which is real work for a feed capped at ~50 rows. At a 500ms poll,\nreplace-on-poll is visually identical to appending."
+      },
+      "DeliveryState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "ready",
+          "in_flight",
+          "delivered",
+          "expired",
+          "superseded",
+          "failed"
+        ],
+        "title": "DeliveryState",
+        "description": "The delivery lifecycle (TECHNICAL_DESIGN.md \u00a7Delivery Lifecycle).\n\n``expired`` and ``superseded`` are decided by the conductor and never reach\na worker."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthRead": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "'ok' when the process is serving"
+          },
+          "db": {
+            "type": "string",
+            "title": "Db",
+            "description": "'ok' when SELECT 1 succeeds, else 'error'"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "db"
+        ],
+        "title": "HealthRead"
+      },
+      "MetricsBucket": {
+        "properties": {
+          "consumer_id": {
+            "type": "integer",
+            "title": "Consumer Id"
+          },
+          "consumer_name": {
+            "type": "string",
+            "title": "Consumer Name"
+          },
+          "bucket_virtual_s": {
+            "type": "integer",
+            "title": "Bucket Virtual S"
+          },
+          "backlog": {
+            "type": "integer",
+            "title": "Backlog"
+          },
+          "ready": {
+            "type": "integer",
+            "title": "Ready"
+          },
+          "in_flight": {
+            "type": "integer",
+            "title": "In Flight"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "delivered": {
+            "type": "integer",
+            "title": "Delivered"
+          },
+          "expired": {
+            "type": "integer",
+            "title": "Expired"
+          },
+          "superseded": {
+            "type": "integer",
+            "title": "Superseded"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "consumer_id",
+          "consumer_name",
+          "bucket_virtual_s",
+          "backlog",
+          "ready",
+          "in_flight",
+          "attempts",
+          "delivered",
+          "expired",
+          "superseded",
+          "failed"
+        ],
+        "title": "MetricsBucket",
+        "description": "One consumer, one virtual second."
+      },
+      "MetricsPage": {
+        "properties": {
+          "simulation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Simulation Id"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          },
+          "next_since_bucket": {
+            "type": "integer",
+            "title": "Next Since Bucket"
+          }
+        },
+        "type": "object",
+        "required": [
+          "simulation_id",
+          "buckets",
+          "next_since_bucket"
+        ],
+        "title": "MetricsPage",
+        "description": "A cursor page of metrics buckets.\n\n``bucket_virtual_s`` genuinely is monotonic, so this cursor works as\ndesigned: poll ``?since_bucket=next_since_bucket`` and append."
+      },
+      "ProcessKind": {
+        "type": "string",
+        "enum": [
+          "conductor",
+          "worker"
+        ],
+        "title": "ProcessKind",
+        "description": "Only the two process types the registry is about.\n\nThe api deliberately does not register: the registry exists so the UI can\nshow that the *delivery* architecture is real, and ``GET /api/process``\nreturning the process serving it proves nothing."
+      },
+      "ProcessRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProcessKind"
+          },
+          "hostname": {
+            "type": "string",
+            "title": "Hostname"
+          },
+          "pid": {
+            "type": "integer",
+            "title": "Pid"
+          },
+          "started_at_wall": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At Wall"
+          },
+          "last_heartbeat_wall": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Heartbeat Wall"
+          },
+          "is_leader": {
+            "type": "boolean",
+            "title": "Is Leader"
+          },
+          "heartbeat_age_s": {
+            "type": "number",
+            "title": "Heartbeat Age S"
+          },
+          "in_flight": {
+            "type": "integer",
+            "title": "In Flight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "hostname",
+          "pid",
+          "started_at_wall",
+          "last_heartbeat_wall",
+          "is_leader",
+          "heartbeat_age_s"
+        ],
+        "title": "ProcessRead",
+        "description": "A live process. Observability only.\n\nOnly rows that heartbeat inside the liveness window are returned; liveness\nis a read-time filter, never a reaper."
+      },
+      "SimStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "paused",
+          "done"
+        ],
+        "title": "SimStatus"
+      },
+      "SimulationCreate": {
+        "properties": {
+          "scenario_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Name"
+          },
+          "speed_multiplier": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed Multiplier"
+          },
+          "fair_drain_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fair Drain Enabled"
+          },
+          "global_attempts_per_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Attempts Per S"
+          }
+        },
+        "type": "object",
+        "title": "SimulationCreate"
+      },
+      "SimulationPatch": {
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SimStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "speed_multiplier": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed Multiplier"
+          },
+          "fair_drain_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fair Drain Enabled"
+          },
+          "global_attempts_per_s": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Attempts Per S"
+          },
+          "outage_override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outage Override",
+            "description": "Force the outage on/off. Null in the response means the scenario script decides."
+          }
+        },
+        "type": "object",
+        "title": "SimulationPatch",
+        "description": "Every field optional -- omitted means \"leave alone\".\n\n``status`` is how pause and resume are expressed: they are epoch rewrites,\nnot a separate endpoint."
+      },
+      "SimulationRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "scenario_name": {
+            "type": "string",
+            "title": "Scenario Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SimStatus"
+          },
+          "speed_multiplier": {
+            "type": "number",
+            "title": "Speed Multiplier"
+          },
+          "fair_drain_enabled": {
+            "type": "boolean",
+            "title": "Fair Drain Enabled"
+          },
+          "global_attempts_per_s": {
+            "type": "number",
+            "title": "Global Attempts Per S"
+          },
+          "outage_override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outage Override"
+          },
+          "virtual_now": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Virtual Now"
+          },
+          "virtual_now_s": {
+            "type": "number",
+            "title": "Virtual Now S"
+          },
+          "phase": {
+            "type": "string",
+            "title": "Phase"
+          },
+          "created_at_wall": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At Wall"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "scenario_name",
+          "status",
+          "speed_multiplier",
+          "fair_drain_enabled",
+          "global_attempts_per_s",
+          "outage_override",
+          "virtual_now",
+          "virtual_now_s",
+          "phase",
+          "created_at_wall"
+        ],
+        "title": "SimulationRead"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
