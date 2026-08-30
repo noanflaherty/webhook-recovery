@@ -420,7 +420,7 @@ CREATE INDEX ON attempt (consumer_id, started_at);
 | Consumer | Subscribes to | Volume | Policies | Purpose |
 |---|---|---|---|---|
 | **Acme Analytics** | all four event types | high | none (deliver everything) | Baseline: what a naive consumer suffers on recovery |
-| **Bolt Billing** | all four event types | high | `customer.subscription.updated`: coalesce by `subscription_id`; `balance.available`: max_staleness 120s; `payment_intent.succeeded`: none | Hero: policies shrink the backlog before it's ever sent — while every payment still lands |
+| **Bolt Billing** | all four event types | high | `customer.subscription.updated`: coalesce by `subscription_id`; `balance.available`: max_staleness 60s; `payment_intent.succeeded`: none | Hero: policies shrink the backlog before it's ever sent — while every payment still lands |
 | **Clover CRM** | `invoice.paid` only | low | none | Fairness case: tiny backlog, should catch up in seconds |
 
 All weights = 1, `concurrency_cap` = 8, `max_attempts_per_s` = 20, `sim_latency_s` = 0.2 to start.
@@ -445,9 +445,15 @@ delivered**. That contrast is the point — policies are per-event-type, and a c
 Deliberately *not* stacking both policies on one event type: it would be realistic, but a reviewer could no longer tell
 which mechanism dropped a given event.
 
-At the default 5-minute outage, everything Bolt receives in the first ~3 minutes of it is already past a 120s staleness
-bound by the time recovery starts — so a majority of its `balance.available` backlog expires without an attempt, which
-is what makes the policy visible in the chart rather than a footnote.
+At the default 5-minute outage, everything Bolt receives in the first ~4 minutes of it is already past a 60s staleness
+bound by the time recovery starts — so a large majority of its `balance.available` backlog expires without an attempt,
+which is what makes the policy visible in the chart rather than a footnote.
+
+**The mix is weighted toward the policy-bearing types on purpose**, and that is a demo decision rather than a modelling
+one. At an even split across the four types only ~58% of Bolt's stream was droppable, and its backlog line ran close
+enough to Acme's that the mechanism worked without *reading* — the whole point of building the instrument before the
+scheduler was to catch exactly this. Volume was moved between types rather than added, so the total stays at
+6.05/virtual s and peak backlog, drain time and the contention ratio are unchanged.
 
 ## Canned Scenario
 

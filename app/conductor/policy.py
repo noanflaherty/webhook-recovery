@@ -8,9 +8,10 @@ because they happen to be in the queue.
 Two mechanisms, deliberately one per event type in the shipped cast so that every
 drop in the demo is attributable to a single cause:
 
-* ``max_staleness_s`` -> ``expired``. A ten-minute-old balance is worthless.
-* ``coalesce: latest_by_key`` -> ``superseded``. Forty subscriptions churned two
-  hundred times; only the latest state of each is worth delivering.
+* ``max_staleness_s`` -> ``expired``. A balance from five minutes ago is not
+  the balance; a consumer that says so should not be sent it.
+* ``coalesce: latest_by_key`` -> ``superseded``. Twenty subscriptions churned
+  hundreds of times; only the latest state of each is worth delivering.
 
 **Neither writes an ``attempt`` row.** Expired and superseded deliveries never
 reach a worker, which is the whole point -- and it is also why fairness and

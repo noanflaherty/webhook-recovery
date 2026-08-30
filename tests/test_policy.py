@@ -27,15 +27,26 @@ from app.conductor.service import _SIM_COLUMNS, Conductor
 from app.core.clock import VIRTUAL_EPOCH_ZERO
 from app.core.enums import DeliveryState
 from app.core.models import Attempt, Consumer, Delivery, Simulation
-from app.core.scenario import seed_simulation
+from app.core.scenario import CONSUMERS, seed_simulation
 from app.worker.claim import claim_batch
 from tests.conftest import a_simulation, requires_db
 
 pytestmark = requires_db
 
-#: Bolt bounds this at 120 virtual seconds; Acme has no policy for it. Both
-#: subscribe, so one ingested event produces one of each.
+#: Bolt bounds this; Acme has no policy for it. Both subscribe, so one ingested
+#: event produces one of each.
 STALENESS_TYPE = "balance.available"
+
+#: Read from the shipped cast rather than written down here. The bound is a
+#: scenario-tuning knob -- it has already moved once -- and a test that hardcodes
+#: it fails on a deliberate tuning change while proving nothing about policy.
+BOLT_STALENESS_S = next(
+    policy.max_staleness_s
+    for spec in CONSUMERS
+    if spec.name == "Bolt Billing"
+    for policy in spec.policies
+    if policy.event_type == STALENESS_TYPE
+)
 
 #: Bolt coalesces this by entity key; Acme does not.
 COALESCE_TYPE = "customer.subscription.updated"
@@ -139,7 +150,7 @@ async def test_a_stale_delivery_expires_and_its_neighbour_does_not(
 
     assert bolt[1] == DeliveryState.EXPIRED
     assert bolt[2] is not None and bolt[2].startswith("stale by ")
-    assert "max 120s" in bolt[2]
+    assert f"max {BOLT_STALENESS_S:.0f}s" in bolt[2]
     assert acme[1] == DeliveryState.READY
 
 
