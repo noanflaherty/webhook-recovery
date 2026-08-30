@@ -153,27 +153,41 @@ One repo → one image → three services differing only by start command, shari
 injected `DATABASE_URL`. `app/core/settings.py` normalizes what Railway injects — the `postgresql://`
 scheme needs `+asyncpg`, and asyncpg rejects the `sslmode` parameter libpq-style URLs carry.
 
+The topology is [`.railway/railway.ts`](.railway/railway.ts) — Infrastructure-as-Code, applied from the
+CLI:
+
 ```bash
-railway login                      # browser-based, run it yourself
-railway init                       # new project
+railway login                                   # browser-based, run it yourself
+railway init --name webhook-recovery
 railway add --database postgres
+railway add --service api --variables 'DATABASE_URL=${{Postgres.DATABASE_URL}}'   # and conductor, worker
 
-# api -- the only service with a pre-deploy migration
-railway up                         # uses railway.json
+npm install                                     # the Railway IaC SDK (needs node >= 22)
+railway config plan                             # preview
+railway config apply --yes
 
-# conductor and worker: create each service in the dashboard, point its
-# config-as-code path at railway.conductor.json / railway.worker.json, and
-# reference the same DATABASE_URL variable.
+railway up --service api --detach               # and conductor, worker
 ```
 
-| Service | Command | Replicas | Config |
-|---|---|---|---|
-| `api` | `uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` | 1 | `railway.json` (pre-deploy `alembic upgrade head`) |
-| `conductor` | `python -m app.conductor` | 1 → 2 once leader election lands in Phase 1 | `railway.conductor.json` |
-| `worker` | `python -m app.worker` | 3 | `railway.worker.json` |
+| Service | Command | Replicas |
+|---|---|---|
+| `api` | `alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` | 1 |
+| `conductor` | `python -m app.conductor` | 1 → 2 once leader election lands in Phase 1 |
+| `worker` | `python -m app.worker` | 3 |
 
-Then run the same checks above against the public URL, and confirm a redeploy re-runs migrations
-idempotently.
+Then `make verify API=https://…` against the public URL.
+
+**Why IaC rather than `railway.json`.** A root `railway.json` applies to *every* service in the project,
+so it cannot give three services three different start commands, and the per-service config-file path is
+a dashboard-only setting. IaC is the only form the CLI can apply. It is also the non-deprecated one —
+config-as-code stops working 2026-12-01.
+
+**Why migrations are in the api's start command.** The plan called for a Railway pre-deploy command on
+`api` only. The IaC DSL has no `preDeployCommand` (Railway's own `config migrate` comments the field
+out), and putting it in `railway.json` would apply it to all three services and reintroduce exactly the
+race the one-shot step exists to prevent. Running it in the api's start command — with `api` pinned to a
+single replica — keeps the guarantee that migrations run once from one place, and has the side benefit
+of being platform-independent rather than a Railway feature.
 
 ## Next
 

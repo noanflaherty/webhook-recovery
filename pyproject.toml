@@ -92,3 +92,7 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 addopts = "-q"
+# Dump every thread's stack after 30s in one test and abort, rather than
+# hanging forever. A deadlocked async test is otherwise indistinguishable from
+# a slow one, and the stack trace names the culprit immediately.
+faulthandler_timeout = 30

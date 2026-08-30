@@ -33,6 +33,17 @@ log = logging.getLogger(__name__)
 #: worker stamps it on the leases it takes.
 LoopBody = Callable[[uuid.UUID], Awaitable[None]]
 
+#: How long a booting process waits for its schema to appear before giving up.
+#: Generous: the only thing it is waiting on is one `alembic upgrade head`, and
+#: failing early here costs a crash-loop for no benefit.
+_REGISTER_TIMEOUT_S = 120.0
+_REGISTER_RETRY_INITIAL_S = 0.5
+_REGISTER_RETRY_MAX_S = 5.0
+
+#: Pause after a failed loop iteration, so a persistent failure does not become
+#: a hot spin against the database.
+_ERROR_BACKOFF_S = 1.0
+
 
 class ProcessRunner:
     """Boot, heartbeat, loop, drain."""
@@ -67,9 +78,44 @@ class ProcessRunner:
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, self.request_stop, sig)
 
+    async def _register_when_ready(self) -> None:
+        """Register, retrying until the schema exists.
+
+        Boot ordering is not guaranteed. Compose gates the workers on the
+        one-shot migrate step, but Railway has no equivalent -- services start
+        concurrently, so a worker can come up while the api is still running
+        `alembic upgrade head` and find no `process` table to insert into.
+
+        Dying there is the wrong answer twice over: it is a transient condition,
+        and the platform's restart policy turns it into a crash-loop that can
+        exhaust its retry budget before the migration finishes. So this waits
+        instead, which is also what a worker should do when its database blinks
+        in production.
+        """
+        delay = _REGISTER_RETRY_INITIAL_S
+        deadline = asyncio.get_running_loop().time() + _REGISTER_TIMEOUT_S
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                await register_process(self.kind, self.process_id)
+                return
+            except Exception:
+                if asyncio.get_running_loop().time() >= deadline or self.stop.is_set():
+                    raise
+                log.warning(
+                    "%s could not register (attempt %d); retrying in %.1fs -- "
+                    "the schema is probably still being migrated",
+                    self.kind.value,
+                    attempt,
+                    delay,
+                )
+            await self._wait(delay)
+            delay = min(delay * 2, _REGISTER_RETRY_MAX_S)
+
     async def run(self) -> None:
         self.install_signal_handlers()
-        await register_process(self.kind, self.process_id)
+        await self._register_when_ready()
         heartbeat_task = asyncio.create_task(
             heartbeat_loop(self.process_id, self.stop, is_leader=lambda: self._is_leader),
             name=f"heartbeat-{self.kind.value}",
@@ -97,7 +143,7 @@ class ProcessRunner:
                 log.exception("%s loop body failed", self.kind.value)
                 # Back off a little so a persistent failure (a database that is
                 # still starting) does not become a hot spin.
-                await self._wait(max(self.interval_s, 1.0))
+                await self._wait(max(self.interval_s, _ERROR_BACKOFF_S))
                 continue
             await self._wait(self.interval_s)
 
