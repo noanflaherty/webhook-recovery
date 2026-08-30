@@ -163,7 +163,7 @@ app/
     claim.py      SKIP LOCKED claim, lease, and the completion state machine
     service.py    one iteration: claim, gather, complete
 alembic/          one migration
-scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh
+scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh
 frontend/         Vite + React stub, and the committed fixtures Track B builds against
 ```
 
@@ -349,6 +349,40 @@ then is the zero stable.
 Compose gates the workers on the migrate step with `service_completed_successfully`; Railway starts
 every service concurrently. Neither platform guarantees ordering, so the runner treats a missing schema
 as a transient condition to wait out rather than a reason to exit.
+
+## CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). Four jobs; the first three run on every pull
+request and push, the fourth only on `main`.
+
+| Job | What it protects |
+|---|---|
+| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture Phase 2's scheduler tests are built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the frozen contract cannot drift out from under the frontend track. |
+| **frontend** | `tsc -b && vite build` |
+| **image** | Builds the Dockerfile, then **boots it**: starts Postgres, runs the real `scripts/start-api.sh`, waits for `/api/health`, and checks a worker registers. A green `docker build` only says the image compiles. This job exists because the Dockerfile is what actually ships and it has broken twice in ways nothing else caught — a missing `README.md` that hatchling needed, and a builder that silently was not the Dockerfile at all. |
+| **deploy** | `main` only, gated on the other three. Deploys api → conductor → worker via [`scripts/deploy_railway.sh`](scripts/deploy_railway.sh), then runs the same `verify.sh` against the public URL. |
+
+`railway up --detach` returns before a deployment is healthy and **exits 0 even when the deployment
+then fails**, which in CI is indistinguishable from success. `deploy_railway.sh` polls to a terminal
+state and dumps build and deploy logs on anything but `SUCCESS`.
+
+### One-time setup
+
+The deploy job is inert until a token exists:
+
+1. **`RAILWAY_TOKEN`** — Settings → Secrets and variables → Actions → *New repository secret*. Create
+   the token in Railway under the project's Settings → Tokens, scoped to the `production` environment.
+2. **`RAILWAY_PUBLIC_URL`** *(optional)* — a repository **variable** (not a secret), e.g.
+   `https://api-production-7c78a.up.railway.app`. Present, the deploy runs `verify.sh` against it;
+   absent, that step is skipped.
+3. The job targets a `production` **environment**, so required reviewers or a deployment branch rule
+   can be added from Settings → Environments without editing the workflow.
+
+Each `railway up` triggers its own image build, so a merge to `main` costs three Railway builds. If
+that is too much on the free tier, delete the `conductor` and `worker` steps — they only need
+redeploying when their code changes — or drop the `deploy` job entirely and connect the services to
+GitHub directly with `railway service source connect --repo <owner>/<repo> --branch main`, which moves
+CD to Railway's own integration and out of Actions.
 
 ## Next
 

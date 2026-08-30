@@ -6,10 +6,15 @@ Nothing in the delivery path consults it, and leader election never reads it --
 leadership is decided entirely by the Postgres advisory lock.
 
 Liveness is a **read-time filter, not a reaper**: ``GET /api/process`` returns
-rows whose ``last_heartbeat_wall`` is inside the window, and stale rows from
-prior deploys accumulate harmlessly and are never read. That keeps the design's
-claim -- "it is not required for correctness" -- literally true rather than
-approximately true.
+rows whose ``last_heartbeat_wall`` is inside the window. Nothing reclaims a
+stale row to decide liveness, which keeps the design's claim -- "it is not
+required for correctness" -- literally true rather than approximately true.
+
+Long-dead rows are still deleted on registration, but only to bound the table.
+The original decision was that they "accumulate harmlessly"; that held for a
+45-second demo and did not survive contact with a service that runs
+continuously, where every restart adds a row and every process rewrites one
+every few seconds. See :func:`_prune_dead`.
 """
 
 from __future__ import annotations
@@ -20,9 +25,10 @@ import os
 import socket
 import uuid
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from sqlalchemy import update
+from sqlalchemy import delete, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import wall_now
 from app.core.db import session_scope
@@ -31,6 +37,11 @@ from app.core.models import Process
 from app.core.settings import get_settings
 
 log = logging.getLogger(__name__)
+
+#: Rows older than this many liveness windows are dropped on the next
+#: registration. Generous on purpose: recent history is useful when debugging a
+#: restart, and the point is bounding growth, not tidiness.
+PRUNE_WINDOW_MULTIPLE = 240
 
 
 async def register_process(kind: ProcessKind, process_id: uuid.UUID | None = None) -> uuid.UUID:
@@ -42,6 +53,7 @@ async def register_process(kind: ProcessKind, process_id: uuid.UUID | None = Non
     pid = process_id or uuid.uuid4()
     now = wall_now()
     async with session_scope() as session:
+        await _prune_dead(session, now)
         session.add(
             Process(
                 id=pid,
@@ -55,6 +67,24 @@ async def register_process(kind: ProcessKind, process_id: uuid.UUID | None = Non
         )
     log.info("registered %s process %s", kind.value, pid)
     return pid
+
+
+async def _prune_dead(session: AsyncSession, now: datetime) -> None:
+    """Drop rows that went stale long ago.
+
+    ``GET /api/process`` is a read-time filter and never reads these, so this is
+    not about correctness -- it is about the table not growing forever. The
+    original decision ("stale rows accumulate harmlessly") assumed a run lasting
+    45 seconds; deployed, every restart adds a row and every process rewrites
+    one every few seconds, and a Postgres volume really did fill up.
+
+    The cutoff is generous -- many multiples of the liveness window -- so rows
+    stay around long enough to be useful when debugging a recent restart, and
+    pruning on registration means no reaper task to own.
+    """
+    window = get_settings().process_liveness_window_s
+    cutoff = now - timedelta(seconds=window * PRUNE_WINDOW_MULTIPLE)
+    await session.execute(delete(Process).where(Process.last_heartbeat_wall < cutoff))
 
 
 async def heartbeat(process_id: uuid.UUID, *, is_leader: bool = False) -> None:

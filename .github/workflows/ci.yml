@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch makes the older run irrelevant. Main is
+# exempt: its runs gate the deploy, so cancelling one would leave a merged
+# commit with no verdict.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # The Dockerfile's node stage. Kept in step so a bundle that builds in CI
+  # also builds in the image. (Python is not pinned here -- uv resolves it from
+  # pyproject's requires-python.)
+  NODE_VERSION: "20"
+
+jobs:
+  backend:
+    name: lint · types · tests
+    runs-on: ubuntu-latest
+
+    # The tests that matter here talk to a real Postgres. Without one,
+    # tests/test_db_fixture.py skips itself and CI would silently stop
+    # covering the transactional fixture that Phase 2's scheduler tests are
+    # going to be built on.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: webhook_recovery
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/webhook_recovery
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/webhook_recovery
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type-check
+        run: uv run mypy app
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      # Guards the single-migration decision: the models are the source of
+      # schema truth, so a model edit without a migration is a bug that would
+      # otherwise only surface at the next deploy.
+      - name: Check the migration matches the models
+        run: uv run alembic check
+
+      - name: Test
+        run: uv run pytest
+
+      # The committed fixtures are generated from the Pydantic response models
+      # and are what the frontend builds against. If they drift, the contract
+      # has silently changed underneath the other track.
+      - name: Check the fixtures are not stale
+        run: |
+          uv run python scripts/gen_fixtures.py
+          git diff --exit-code -- frontend/src/fixtures openapi.json
+
+  frontend:
+    name: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm --prefix frontend ci
+
+      # `npm run build` is `tsc -b && vite build`, so this type-checks too.
+      - run: npm --prefix frontend run build
+
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only, never push -- Railway builds its own image from source.
+      # This exists because the Dockerfile is the artifact that actually ships
+      # and it has broken twice in ways nothing else caught: a missing
+      # README.md that hatchling needed, and a builder that silently was not
+      # this file at all.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: webhook-recovery:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green build says the image compiles, not that it runs. This says it
+      # boots, migrates, and serves -- the same start command Railway uses.
+      - name: Boot it and check health
+        run: |
+          docker network create ci-net
+          docker run -d --name pg --network ci-net \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=webhook_recovery postgres:16-alpine
+          for _ in $(seq 1 30); do
+            docker exec pg pg_isready -U postgres -d webhook_recovery && break
+            sleep 2
+          done
+
+          docker run -d --name api --network ci-net -p 8000:8000 \
+            -e DATABASE_URL=postgresql://postgres:postgres@pg:5432/webhook_recovery \
+            -e PORT=8000 webhook-recovery:ci ./scripts/start-api.sh
+
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8000/api/health; then echo; ok=1; break; fi
+            sleep 2
+          done
+          if [ "${ok:-0}" != "1" ]; then
+            echo "::error::the image did not serve /api/health"
+            docker logs api
+            exit 1
+          fi
+
+          # A worker must boot against the same image and register itself.
+          docker run -d --name worker --network ci-net \
+            -e DATABASE_URL=postgresql://postgres:postgres@pg:5432/webhook_recovery \
+            webhook-recovery:ci python -m app.worker
+          sleep 8
+          docker logs worker
+          docker logs worker 2>&1 | grep -q "registered worker process" || {
+            echo "::error::the worker did not register"; exit 1; }
+
+  deploy:
+    name: deploy to Railway
+    needs: [backend, frontend, image]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Lets you require a manual approval or restrict secrets from the repo's
+    # Settings -> Environments, without touching this file.
+    environment: production
+    # Never let two deploys of the same services overlap.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install the Railway CLI
+        run: npm install -g @railway/cli
+
+      # Each service builds from the same source; only the start command in
+      # .railway/railway.ts differs. The api runs migrations on boot, so it
+      # goes first and the others are gated on it -- workers that come up
+      # against an un-migrated schema will wait, but there is no reason to
+      # make them.
+      - name: Deploy api
+        run: ./scripts/deploy_railway.sh api
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Deploy conductor
+        run: ./scripts/deploy_railway.sh conductor
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Deploy worker
+        run: ./scripts/deploy_railway.sh worker
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      # The deploy is not done when the build is done. This is the same
+      # verification used locally, pointed at the public URL.
+      - name: Verify the deployment
+        if: vars.RAILWAY_PUBLIC_URL != ''
+        run: EXPECTED_PROCESSES=3 ./scripts/verify.sh "${{ vars.RAILWAY_PUBLIC_URL }}"
