@@ -7,20 +7,27 @@
 // different start commands, and the per-service config-file path is a
 // dashboard-only setting.
 //
-//   railway config plan     # preview
-//   railway config apply    # apply
+//   npm install                 # the IaC SDK, needs node >= 22
+//   railway config plan         # preview
+//   railway config apply --yes
 //   railway up --service api --detach
-//
-// The builder is not declared here -- Railway detects the root Dockerfile on
-// its own, and the IaC DSL has no builder/dockerfilePath option.
 
 import { defineRailway, postgres, preserve, project, service, volume } from "railway/iac";
 
-// Match the api's SIGTERM-to-SIGKILL buffer to the runner's drain: an
-// iteration that has started is allowed to finish, so a redeploy strands no
-// in_flight rows. (Lease reaping is out of scope -- see TECHNICAL_DESIGN.md
-// §Leases -- which is exactly why the graceful path has to be graceful.)
+// Pin the Dockerfile builder. Railway re-detects a builder per service, and it
+// has silently fallen back to Railpack here -- which then fails on
+// `No interpreter found for Python ==3.12.*`, several minutes into a build, for
+// a project that has a working Dockerfile sitting at the root. The IaC DSL has
+// no `builder` option, so this variable is the way to say it from code.
+const DOCKERFILE = { RAILWAY_DOCKERFILE_PATH: "Dockerfile" };
+
+// Match the SIGTERM-to-SIGKILL buffer to the runner's drain: an iteration that
+// has started is allowed to finish, so a redeploy strands no in_flight rows.
+// (Lease reaping is out of scope -- see TECHNICAL_DESIGN.md §Leases -- which is
+// exactly why the graceful path has to be graceful.)
 const DRAIN = { RAILWAY_DEPLOYMENT_DRAINING_SECONDS: "20" };
+
+const COMMON = { DATABASE_URL: preserve(), ...DOCKERFILE, ...DRAIN };
 
 export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: "sfo" });
@@ -31,42 +38,46 @@ export default defineRailway(() => {
     sizeMB: 500,
   });
 
-  // Migrations run exactly once, from one place. Three services racing
-  // `alembic upgrade head` on boot can deadlock, so only the api -- which is
-  // pinned to a single replica -- runs them, and it does so before it serves.
+  // The start command is a single script rather than
+  // `alembic upgrade head && uvicorn ...`: Railway's start-command parser does
+  // its own interpolation and word splitting, so shell operators and
+  // `${VAR:-default}` are unreliable (the latter reaches the process as a
+  // literal string, and uvicorn exits on the unparseable port). Everything that
+  // needs a shell lives inside scripts/start-api.sh, where a real /bin/sh runs
+  // it -- and that script is testable with `docker run`, which the start
+  // command is not.
   //
-  // The plan called for a Railway pre-deploy command; the IaC DSL has no
-  // preDeployCommand, and putting it in the deprecated railway.json would apply
-  // it to all three services and reintroduce the race. Same guarantee, and it
-  // has the side benefit of being platform-independent.
+  // Migrations run there, from this service only, which is pinned to one
+  // replica: the same "exactly once, from one place" guarantee compose gets
+  // from its one-shot migrate service. The IaC DSL has no preDeployCommand
+  // (Railway's own `config migrate` comments the field out), and a root
+  // railway.json would apply one to all three services and reintroduce the
+  // race the one-shot step exists to prevent.
   const api = service("api", {
-    // PORT is declared below rather than assumed: Railway does not inject one
-    // on its own, and `--port $PORT` against an unset variable expands to an
-    // empty argument, so uvicorn never binds and the healthcheck times out
-    // with nothing in the logs to say why. The `:-8000` fallback keeps the
-    // same command working anywhere else the image runs.
-    start: "alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-8000}",
+    start: "./scripts/start-api.sh",
     healthcheck: "/api/health",
-    healthcheckTimeout: 60,
+    healthcheckTimeout: 120,
     replicas: 1,
-    env: { PORT: "8000", DATABASE_URL: preserve(), ...DRAIN },
+    env: { PORT: "8000", ...COMMON },
   });
 
   // One conductor. Leader election lands in Phase 1, at which point this goes
-  // to 2 -- one leads, one stands by on the advisory lock. Two idle conductors
-  // prove nothing today.
+  // to 2 -- one leads, one stands by on the advisory lock.
   const conductor = service("conductor", {
     start: "python -m app.conductor",
     replicas: 1,
-    env: { DATABASE_URL: preserve(), ...DRAIN },
+    env: COMMON,
   });
 
-  // Stateless and interchangeable, so scaling is a replica count and nothing
-  // else. Claim contention is handled by SKIP LOCKED (Phase 1).
+  // The design calls for 3, and compose runs 3. Railway's free tier rejects any
+  // service with more than 2 replicas outright ("Total replicas across all
+  // regions must be less than or equal to 2"), so the deployed copy runs 2.
+  // Workers are stateless and interchangeable, so this is a capacity
+  // difference and nothing else -- claim contention is handled by SKIP LOCKED.
   const worker = service("worker", {
     start: "python -m app.worker",
-    replicas: 3,
-    env: { DATABASE_URL: preserve(), ...DRAIN },
+    replicas: 2,
+    env: COMMON,
   });
 
   return project("webhook-recovery", {

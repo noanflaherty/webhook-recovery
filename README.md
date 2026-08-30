@@ -189,6 +189,13 @@ race the one-shot step exists to prevent. Running it in the api's start command 
 single replica — keeps the guarantee that migrations run once from one place, and has the side benefit
 of being platform-independent rather than a Railway feature.
 
+**Boot ordering is not guaranteed.** Compose gates the workers on the migrate step with
+`service_completed_successfully`; Railway starts every service concurrently, so a worker can come up
+mid-migration and find no `process` table to insert into. The runner therefore retries registration with
+capped backoff rather than exiting — a transient condition should not become a crash-loop that can
+exhaust its restart budget before the migration finishes. This was found by deploying the skeleton,
+which is the entire reason Phase 0 deploys before there is any business logic to blame.
+
 ## Next
 
 **Phase 1** — the walking skeleton: ingest → fan-out → naive conductor → worker → `delivered`, plus
