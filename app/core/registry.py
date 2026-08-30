@@ -1,8 +1,8 @@
 """Process self-registration and heartbeats.
 
-Observability only. It exists so a reviewer can see that three workers and a
-conductor are really separate processes rather than taking the split on faith.
-Nothing in the delivery path consults it, and leader election never reads it --
+Observability only. It exists so the UI can show that the workers and the
+conductor are really separate processes rather than asserting it. Nothing in the
+delivery path consults it, and leader election never reads it --
 leadership is decided entirely by the Postgres advisory lock.
 
 Liveness is a **read-time filter, not a reaper**: ``GET /api/process`` returns
@@ -10,11 +10,9 @@ rows whose ``last_heartbeat_wall`` is inside the window. Nothing reclaims a
 stale row to decide liveness, which keeps the design's claim -- "it is not
 required for correctness" -- literally true rather than approximately true.
 
-Long-dead rows are still deleted on registration, but only to bound the table.
-The original decision was that they "accumulate harmlessly"; that held for a
-45-second demo and did not survive contact with a service that runs
-continuously, where every restart adds a row and every process rewrites one
-every few seconds. See :func:`_prune_dead`.
+Long-dead rows are deleted on registration, but only to bound the table: on a
+continuously running service every restart adds a row and every process rewrites
+one every few seconds. See :func:`_prune_dead`.
 """
 
 from __future__ import annotations

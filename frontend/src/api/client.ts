@@ -35,7 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     // FastAPI puts the useful half in `detail`; fall back to the status line
-    // rather than showing a reviewer a raw HTML error page.
+    // rather than rendering a raw HTML error page into the UI.
     let detail = response.statusText
     try {
       const body: unknown = await response.json()

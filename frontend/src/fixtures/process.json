@@ -7,7 +7,7 @@
     "started_at_wall": "2026-01-01T11:58:30Z",
     "last_heartbeat_wall": "2026-01-01T11:59:58Z",
     "is_leader": true,
-    "heartbeat_age_s": 2.53,
+    "heartbeat_age_s": 2.3,
     "in_flight": 0
   },
   {
@@ -18,8 +18,8 @@
     "started_at_wall": "2026-01-01T11:58:30Z",
     "last_heartbeat_wall": "2026-01-01T11:59:58Z",
     "is_leader": false,
-    "heartbeat_age_s": 2.04,
-    "in_flight": 5
+    "heartbeat_age_s": 2.73,
+    "in_flight": 6
   },
   {
     "id": "00000000-0000-0000-0000-0000b0b00002",
@@ -29,8 +29,8 @@
     "started_at_wall": "2026-01-01T11:58:30Z",
     "last_heartbeat_wall": "2026-01-01T11:59:58Z",
     "is_leader": false,
-    "heartbeat_age_s": 0.65,
-    "in_flight": 5
+    "heartbeat_age_s": 2.08,
+    "in_flight": 7
   },
   {
     "id": "00000000-0000-0000-0000-0000b0b00003",
@@ -40,7 +40,7 @@
     "started_at_wall": "2026-01-01T11:58:30Z",
     "last_heartbeat_wall": "2026-01-01T11:59:58Z",
     "is_leader": false,
-    "heartbeat_age_s": 2.19,
-    "in_flight": 2
+    "heartbeat_age_s": 0.95,
+    "in_flight": 8
   }
 ]

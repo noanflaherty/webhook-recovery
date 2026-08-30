@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Verify the derived virtual clock through the API.
 
-This is the Phase 0 check worth doing carefully: the clock is the only output
-that three separate processes have to agree on, and a wrong answer is invisible
-until Phase 3, where it presents as a *fairness* bug rather than a clock bug.
+The check worth doing carefully: the clock is the only output three separate
+processes have to agree on, and a wrong answer does not present as a clock bug
+-- it presents as a *fairness* bug.
 
 **Latency-aware on purpose.** The naive version of this check -- read, sleep one
 second, read, assert the delta is ~20 -- only holds on localhost. Every read is
 a round trip, and at a 20x multiplier a 265ms RTT is worth five virtual seconds,
 so against a deployed URL the naive check fails on a clock that is perfectly
-correct. Since the plan calls for running these checks against Railway, the
-assertions are written against the invariant that actually holds everywhere:
+correct. Since these checks also run against the deployment, the assertions are
+written against the invariant that holds everywhere:
 
     virtual elapsed  ==  wall elapsed  x  speed_multiplier
 

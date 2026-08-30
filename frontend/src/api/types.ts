@@ -2,10 +2,9 @@
  * The frozen API contract, hand-mirrored from `app/api/schemas.py`.
  *
  * Source of truth is that file, with `openapi.json` as the generated witness of
- * it. These are written by hand rather than generated: the contract was frozen
- * in Phase 0 precisely so the two tracks could move in parallel, and a codegen
- * step would put a backend build between this track and a type change it does
- * not want anyway.
+ * it. These are written by hand rather than generated: a codegen step would put
+ * a backend build in front of every frontend type change, and the contract is
+ * small enough that the mirror is cheaper than the toolchain.
  *
  * Ingest (`EventCreate` / `EventRead`) is deliberately absent -- the UI never
  * posts events. The producer inside the api process does that.
@@ -89,8 +88,8 @@ export interface ConsumerRead {
   failed: number
   /**
    * Virtual seconds from the end of the outage until this consumer's backlog
-   * hit zero. Null while still draining -- and, in Phase 1, null always: the
-   * route returns it unconditionally. `deriveCaughtUpAfter` covers the gap.
+   * hit zero. Always null: nothing computes it server-side, so the UI derives
+   * it from the metrics series instead. See `deriveCaughtUpAfter`.
    */
   caught_up_after_s: number | null
 }

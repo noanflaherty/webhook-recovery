@@ -9,13 +9,12 @@ Two things matter here, and they are separate:
 
 2. **Outage-shaped, not placeholder-shaped.** Three consumers, an outage at
    2:00, recovery at 7:00, backlogs climbing and draining. A chart tuned
-   against flat placeholder data looks wrong the moment real data arrives --
-   which is a Phase 3 problem manufactured in Phase 0.
+   against flat placeholder data looks wrong the moment real data arrives.
 
 The numbers are synthesized, not simulated: this is a drawing of the curve the
-real system should produce, precise enough to build axes, legends and colour
-scales against. It deliberately does not import the conductor, because the
-conductor does not exist yet -- that is the entire point of shipping it now.
+real system produces, precise enough to build axes, legends and colour scales
+against. It deliberately does not import the conductor, so regenerating the
+fixtures needs neither a database nor a running scheduler.
 
     uv run python scripts/gen_fixtures.py
 """
@@ -140,13 +139,12 @@ def _jitter(rng: random.Random, value: float, spread: float = 0.12) -> float:
 def fair_allocate(demand: dict[int, float], budget: float) -> dict[int, float]:
     """Split a contended budget by weight, work-conserving.
 
-    This is the shape of the thing Phase 3 has to get right, and the reason the
-    fixture bothers to model it rather than assign each consumer a fixed drain
-    rate: the **attempts-share chart is the fairness proof**. With equal weights
-    and all three backlogged the segments must be equal thirds; once Clover
-    drains, its segment correctly goes to zero and the other two absorb its
-    share. A chart built against fixed drain rates would never show that
-    handover, and the legend explaining it would never get written.
+    Mirrors the conductor's allocator, which is why the fixture models it
+    rather than assigning each consumer a fixed drain rate: the
+    **attempts-share chart is the fairness proof**. With equal weights and all
+    three backlogged the segments must be equal thirds; once Clover drains, its
+    segment correctly goes to zero and the other two absorb its share. A chart
+    built against fixed drain rates would never show that handover.
 
     Unused share is redistributed to whoever still has work (§Fairness,
     "work-conserving"), which is what the repeat-until-stable loop does.
@@ -270,9 +268,9 @@ def build_decisions(rng: random.Random, runs: dict[int, ConsumerRun]) -> list[De
         cid = run.profile.id
         outcomes += [(cid, DeliveryState.DELIVERED, None)] * 6
         if run.expired:
-            outcomes += [(cid, DeliveryState.EXPIRED, "stale by {n}s past a 120s bound")] * 5
+            outcomes += [(cid, DeliveryState.EXPIRED, "stale by {n}s (max 60s)")] * 5
         if run.superseded:
-            outcomes += [(cid, DeliveryState.SUPERSEDED, "newer delivery for the same entity key")] * 5
+            outcomes += [(cid, DeliveryState.SUPERSEDED, "superseded by delivery {d}")] * 5
         outcomes += [(cid, DeliveryState.FAILED, "retry cap reached after 5 attempts")]
 
     names = {p.id: p.name for p in PROFILES}
@@ -306,7 +304,8 @@ def build_decisions(rng: random.Random, runs: dict[int, ConsumerRun]) -> list[De
                 event_type=event_type,
                 entity_key=entity_key,
                 state=state,
-                terminal_reason=(reason or "").format(n=rng.randrange(20, 400)) or None,
+                terminal_reason=(reason or "").format(n=rng.randrange(20, 400), d=rng.randrange(1000, 90000))
+                or None,
                 attempt_count=5 if state is DeliveryState.FAILED else (0 if reason else 1),
                 occurred_at=VIRTUAL_EPOCH_ZERO + timedelta(seconds=completed_s - rng.uniform(30, 300)),
                 completed_at=VIRTUAL_EPOCH_ZERO + timedelta(seconds=completed_s),

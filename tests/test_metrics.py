@@ -158,8 +158,8 @@ async def test_a_new_leader_backfills_the_gap_it_inherited(
     A writer with a memory-only cursor starts from nothing and would either
     re-write from zero or skip the gap entirely. Recovering the cursor from
     ``MAX(bucket_virtual_s)`` is what makes the new leader fill in exactly the
-    buckets the old one never got to -- at the moment the demo is showing off
-    failover, which is the worst possible moment for the chart to break.
+    buckets the old one never got to, so a change of leadership leaves no trace
+    in the chart.
     """
     sim = await _seeded(session)
     await _attempts_at(session, sim, [1.5, 12.5, 25.5])

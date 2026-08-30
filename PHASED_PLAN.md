@@ -19,8 +19,8 @@
 
 | Phase | Goal | Rough size | Cumulative |
 |---|---|---|---|
-| **0** ✅ | Foundations & frozen contracts | 1–1.5h | 1.5h |
-| **1** 🔨 | Walking skeleton + the cast, deployed | 1–1.5h | 3h |
+| **0** | Foundations & frozen contracts | 1–1.5h | 1.5h |
+| **1** | Walking skeleton + the cast, deployed | 1–1.5h | 3h |
 | **2** | Instrument panel — UI live on the naive run | 1–1.5h | 4.5h |
 | **3** | The two claims: fairness + policy — **minimum viable submission** | 1.5–2h | 6.5h |
 | **4** | Polish + docs + video (**required deliverable**) | 1.5–2h | 8.5h |
@@ -70,7 +70,7 @@ charts. The tracks stop being independent at Phase 2 — that is the cost of the
 
 ---
 
-## Phase 0 — Foundations & Contracts ✅
+## Phase 0 — Foundations & Contracts
 
 Blocking. Nothing else started until this landed.
 
@@ -87,7 +87,7 @@ Blocking. Nothing else started until this landed.
 **Exit:** `docker compose up` → migrations apply, processes register and heartbeat.
 **Unlocked:** Track B, immediately — which is what made the resequencing below possible at all.
 
-## Phase 1 — Walking Skeleton 🔨
+## Phase 1 — Walking Skeleton
 
 End-to-end with deliberately stupid logic. **This is the highest-value phase per hour** because it retires the
 deployment risk.

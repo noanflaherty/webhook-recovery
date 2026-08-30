@@ -50,8 +50,8 @@ async def committed(engine: AsyncEngine) -> AsyncIterator[tuple[uuid.UUID, async
     """A simulation with `READY` ready deliveries, genuinely committed.
 
     Cleanup is a single delete: every table carries ``simulation_id`` with
-    ``ON DELETE CASCADE``, which is the same property that lets a reviewer run
-    concurrent simulations without them interfering.
+    ``ON DELETE CASCADE``, which is the same property that lets concurrent
+    simulations run without interfering.
 
     It sweeps before it builds as well as after. This is the only file in the
     suite that commits, so an interrupted run leaves rows behind -- and the next

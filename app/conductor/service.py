@@ -103,9 +103,8 @@ class Conductor:
         """Mark a drained run ``done`` and freeze its clock.
 
         Not housekeeping. A pass covers *every* running simulation, so one that
-        nobody retires goes on costing conductor throughput forever -- and the
-        cost lands on whichever run a reviewer is currently watching. Every visit
-        to the deployment leaves another one behind.
+        nobody retires goes on costing conductor throughput forever, at the
+        expense of every other run in the same pass.
 
         Freezing the clock alongside the status mirrors what ``PATCH`` does for
         a manual finish, so the final numbers stop moving either way.

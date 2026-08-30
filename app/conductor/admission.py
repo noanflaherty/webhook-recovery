@@ -17,9 +17,9 @@ Two arms, and the toggle between them is the first claim's whole argument:
 policies off too, or the toggle stops isolating one variable and the comparison
 proves nothing.
 
-The split between deciding (:func:`select_candidates`) and writing
-(:func:`mark_ready`) is the seam this phase slotted into: fairness changed *which*
-rows come back from the first, and the second did not change at all.
+Deciding (:func:`select_candidates`) is kept separate from writing
+(:func:`mark_ready`): the fairness arm changes *which* rows come back from the
+first, and the second is identical on both arms.
 """
 
 from __future__ import annotations

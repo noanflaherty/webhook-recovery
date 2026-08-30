@@ -6,7 +6,7 @@ provider capacity, rather than delivering ten minutes of stale balance updates
 because they happen to be in the queue.
 
 Two mechanisms, deliberately one per event type in the shipped cast so that every
-drop in the demo is attributable to a single cause:
+drop is attributable to a single cause:
 
 * ``max_staleness_s`` -> ``expired``. A balance from five minutes ago is not
   the balance; a consumer that says so should not be sent it.
@@ -115,8 +115,8 @@ def stale_by(now: datetime, created_at: datetime, max_staleness_s: float | None)
     """Virtual seconds this delivery is *past* its staleness bound, or ``None``.
 
     Returns the overage rather than a bool so the terminal reason can say how
-    late it was. "stale by 43s (max 120s)" is a sentence a reviewer can check
-    against the clock; "expired" is one they have to take on faith.
+    late it was. "stale by 43s (max 60s)" is a sentence you can check against
+    the clock; "expired" is one you have to take on faith.
 
     Takes the bound rather than a :class:`Policy` because the worker calls this
     too -- it is the one piece of policy logic the data plane contains, and it

@@ -1,9 +1,9 @@
 """Process registry growth is bounded.
 
 The registry is observability only, so none of this is about correctness. It is
-about the table not growing without limit: the original "stale rows accumulate
-harmlessly" decision assumed a 45-second demo run, and a continuously-running
-deployment filled a Postgres volume.
+about the table not growing without limit: on a continuously running deployment
+every restart adds a row and every process rewrites one every few seconds, which
+is enough to fill a small Postgres volume.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ async def test_long_dead_rows_are_pruned(session: AsyncSession) -> None:
 
 
 async def test_recent_rows_survive(session: AsyncSession) -> None:
-    """Pruning must not eat rows a reviewer might still want to look at.
+    """Pruning must not eat rows that are still worth looking at.
 
     A process that died a minute ago is already invisible to /api/process --
     the read-time filter handles that -- and deleting it would throw away the

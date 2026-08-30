@@ -28,7 +28,7 @@
     "/api/simulation": {
       "post": {
         "summary": "Create Simulation",
-        "description": "Create a simulation and seed its cast, in one transaction.\n\nSeeding belongs here rather than in a later phase because fan-out reads\n``subscription``: a simulation with no consumers accepts events and delivers\nthem to nobody, which is a walking skeleton that cannot walk.\n\nCreating a simulation *is* Reset. Everything is namespaced by\n``simulation_id``, so runs persist side by side and a reviewer can leave one\nup while starting another.",
+        "description": "Create a simulation and seed its cast, in one transaction.\n\nSeeding belongs here because fan-out reads ``subscription``: a simulation\nwith no consumers accepts events and delivers them to nobody.\n\nCreating a simulation *is* Reset. Everything is namespaced by\n``simulation_id``, so runs persist side by side and one can be left running\nwhile another starts.",
         "operationId": "create_simulation_api_simulation_post",
         "requestBody": {
           "content": {

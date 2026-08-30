@@ -6,7 +6,7 @@
  * the outage band has to be drawn on the very first frame, before any request
  * has come back, and a chart that draws its reference band one poll late is
  * visibly wrong on load. They are frozen alongside the API contract, so the
- * duplication has the same lifetime as the rest of Phase 0's freeze.
+ * duplication has the same lifetime as the contract itself.
  */
 import type { Phase } from './api/types'
 

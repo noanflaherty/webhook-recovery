@@ -5,20 +5,53 @@ A webhook delivery system built for **graceful recovery after a provider outage*
 1. **Fair backlog burndown** — one consumer's backlog never slows another's.
 2. **Consumer-defined policy** — the consumer decides what is worth replaying at all.
 
-Design: [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) · Plan: [`PHASED_PLAN.md`](PHASED_PLAN.md) ·
-Rationale: [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md)
+Design: [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) · Rationale: [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) ·
+Plan: [`PHASED_PLAN.md`](PHASED_PLAN.md)
 
 ---
 
-## Status: Phase 3 — the two claims
+## What you are looking at
 
-**Deployed:** https://api-production-7c78a.up.railway.app
+**Live:** https://api-production-7c78a.up.railway.app
 
-Events flow end to end — **producer → ledger → fan-out → admission → worker → `delivered`** — across five
-processes coordinating only through Postgres, with `pg_try_advisory_lock` leader election, and the whole
-run is drawn live in the browser.
+A simulated provider emits events to three consumers, goes dark for five minutes, and comes back. The
+whole thing runs on a virtual clock at 20×, so a fifteen-minute incident plays out in about a minute of
+real time, and the browser draws it live.
 
-Both claims are now behaviour rather than seams:
+<!-- screenshot of a live run goes here -->
+
+| Virtual time | What happens |
+|---|---|
+| 0:00 – 2:00 | **normal** — events flow, backlogs stay near zero |
+| 2:00 – 7:00 | **outage** — the provider keeps emitting and the ledger keeps accepting; only *delivery* stops, so backlogs climb |
+| 7:00 – 15:00 | **recovery** — the backlog burns down while fresh traffic is still arriving |
+| 15:00 | the producer stops, the backlog reaches a stable zero, and the run retires itself |
+
+Three consumers, each demonstrating exactly one thing:
+
+| Consumer | Subscribes to | Demonstrates |
+|---|---|---|
+| **Acme Analytics** | all four event types | The baseline. No policies, so its entire backlog has to be delivered — what a naive consumer suffers on recovery. |
+| **Bolt Billing** | all four event types | The second claim. Same stream as Acme, but its policies shrink the backlog *before* anything is sent. |
+| **Clover CRM** | `invoice.paid` only | The first claim. A small backlog that should not have to queue behind the other two. |
+
+**What to touch.** Start a run, then flip **Fair drain** mid-outage-recovery: the attempts-share chart
+changes slope within a tick, and Clover's segment goes from a sliver to an equal third. **Pause**,
+**speed** and **Force outage** are the other three knobs. If the backend is asleep, *view the recorded
+run* serves a committed fixture of a real run against a local clock — no backend needed.
+
+A representative fair run, with policy on:
+
+```
+Acme Analytics   delivered=5408  expired=0    superseded=0
+Bolt Billing     delivered=3823  expired=581  superseded=1004
+Clover CRM       delivered=707   expired=0    superseded=0
+```
+
+Acme and Bolt see the identical event stream. Bolt delivered 1,585 fewer events because it said, in
+advance, which ones it did not want — and every payment still landed.
+
+## The two claims, as behaviour
 
 - **Fair backlog burn-down.** The conductor admits by weighted round-robin across dispatchable
   consumers, work-conserving, with `concurrency_cap` and `max_attempts_per_s` enforced from the same
@@ -29,44 +62,75 @@ Both claims are now behaviour rather than seams:
   pipeline recovers, and whether it has been superseded depends on what queued up behind it. Neither is
   knowable at ingest.
 
-| | |
-|---|---|
-| **Built** | ingest + fan-out, the producer, weighted fair admission + the naive FIFO arm behind the toggle, both policy mechanisms, the outage gate, derived metric buckets, leader election, `SKIP LOCKED` claim, the full attempt state machine, the UI |
-| **Deliberately absent** | lease reaping (see [Scoped out](#scoped-out)), per-consumer retry policy, `batch_by_key` coalescing |
+**Deliberately absent:** lease reaping, per-consumer retry policy, and `batch_by_key` coalescing. See
+[`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) for what that costs.
 
-One **naive** run — `fair_drain = OFF`, the arm the toggle is measured against — backlog (`b`) and
-delivered (`d`) per consumer, at 20×, about 60 real seconds end to end:
+## How it works
+
+Three process types, one image, one codebase. They share no memory, no queue and no message bus —
+**Postgres is the only thing they coordinate through.**
 
 ```
-t=  50s normal     Acme b=14   d=287   Bolt b=14   d=287   Clover b=2   d=39
-t= 171s outage     Acme b=305  d=726   Bolt b=305  d=726   Clover b=43  d=97
-t= 292s outage     Acme b=1034 d=726   Bolt b=1034 d=726   Clover b=141 d=97
-t= 413s outage     Acme b=1751 d=726   Bolt b=1751 d=726   Clover b=235 d=97
-t= 535s recovery   Acme b=1276 d=1940  Bolt b=1277 d=1939  Clover b=168 d=262
-t= 656s recovery   Acme b=756  d=3204  Bolt b=756  d=3204  Clover b=99  d=429
-t= 777s recovery   Acme b=204  d=4474  Bolt b=204  d=4474  Clover b=26  d=593
-t= 899s recovery   Acme b=13   d=5408  Bolt b=13   d=5408  Clover b=2   d=719
-t=1020s done       Acme b=0    d=5421  Bolt b=0    d=5421  Clover b=0   d=721
+     producer  (a task inside the api process)
+                          │
+  ┌──────────────────────────────────────────────┐
+  │ api                                          │
+  │   ledger write + fan-out, in one txn         │
+  │   serves the SPA and the data behind it      │
+  └──────────────────────────────────────────────┘
+                          │
+  ┌──────────────────────────────────────────────┐
+  │ postgres  —  the only shared state           │
+  │   + pg_try_advisory_lock (leader election)   │
+  └──────────────────────────────────────────────┘
+           ▲                              ▲
+           │                              │
+     ┌───────────────────────────┐  ┌───────────────────────────────┐
+     │ conductor  ×2             │  │ worker  ×N                    │
+     │                           │  │                               │
+     │ one leads, one stands     │  │ SKIP LOCKED claim, lease,     │
+     │ by on the advisory lock   │  │ deliver, complete             │
+     │                           │  │                               │
+     │ policy → fairness →       │  │ stateless; scale freely       │
+     │ admission                 │  └───────────────────────────────┘
+     └───────────────────────────┘
 ```
 
-Deliveries stop entirely between 2:00 and 7:00 while events keep landing in the ledger — that is the one
-`if` in the conductor pass, and it is what gives the rest of the project something to burn down. The
-producer stops at 900 virtual seconds; the backlog reaches a stable zero and the run retires itself.
+A delivery moves `pending → ready → in_flight → delivered`, or terminates at `expired`, `superseded` or
+`failed`. The interesting state is **`ready`**: it is an *admission-control token materialized as a row
+state* — the conductor has decided this specific delivery may be attempted now. The buffer is kept
+shallow, because its depth is the granularity of fairness.
 
-Acme and Bolt track each other exactly, because they subscribe to the same four event types and nothing
-yet distinguishes them under the naive arm. Bolt's policies are what pull those two lines apart — which
-is precisely why this baseline is worth keeping.
+One conductor pass, per running simulation:
+
+1. **Measure** — write the metric buckets for the virtual seconds that have elapsed.
+2. **Gate** — if the simulation is in its outage, admit nothing and stop here.
+3. **Select** — pull candidate deliveries, evaluate each consumer's policy against them (drops are
+   recorded as `expired`/`superseded` and never reach a worker), then ration what survives across
+   consumers by weight.
+4. **Admit** — flip the survivors to `ready`.
+
+Policy runs *inside* candidate selection rather than before it, because a policy drop consumes a
+candidate slot but not an *attempt* — and fairness is measured in attempts. Rationing candidates
+instead would hand a policy-heavy consumer its share, watch policy eat almost all of it, and starve it
+with a scheduler that was working correctly.
+
+Conductor failure degrades throughput to zero and then fully resumes: acceptance never depends on
+scheduling, so events keep landing in the ledger while no conductor holds the lock. Full reasoning in
+[`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md).
 
 ## Run it
 
 ```bash
 make up                          # postgres -> migrate -> api + 2 conductors + 3 workers
 open http://localhost:8000
-curl -sX POST localhost:8000/api/simulation -H 'content-type: application/json' -d '{}'
 ```
 
-All from one image. Postgres is published on host port **5433** (5432 is usually taken); override with
-`POSTGRES_HOST_PORT`. `make help` lists everything; the ones you will actually use:
+All from one image; the api serves the SPA as well as the API. Postgres is published on host port
+**5433** (5432 is usually taken); override with `POSTGRES_HOST_PORT`, and the api's with
+`API_HOST_PORT`.
+
+`make help` lists everything. The ones you will actually use:
 
 ```bash
 make install                     # uv sync + npm install
@@ -75,73 +139,72 @@ make api                         # uvicorn on :8000 with reload
 make worker / make conductor     # one of each, on the host
 make web                         # vite on :5173, proxying /api to :8000
 make psql                        # a shell on the compose database
-make check                       # lint + typecheck + test
+make check                       # lint + typecheck + test, backend and frontend
 make fixtures                    # regenerate fixtures and openapi.json from the models
 ```
 
 ## Verify
 
-With the stack up:
-
 ```bash
-make check                       # ruff, mypy strict, pytest
+make check                       # ruff, mypy --strict, pytest, frontend lint/build/test
 make migration-check             # the migration still matches the models
 make fixtures-check              # openapi.json and the fixtures are not stale
-make verify                      # the exit criteria, as executable checks
+make verify                      # health, processes, schema, clock, pipeline, bundle
 ```
 
-`make verify` runs [`scripts/verify.sh`](scripts/verify.sh). It works against the deployment too:
+`make verify` runs [`scripts/verify.sh`](scripts/verify.sh) against a *running* stack, and starts its
+own throwaway simulations to do it. Against compose:
+
+```
+== health
+   {"status":"ok","db":"ok"}
+   OK  api up
+   OK  database reachable
+
+== processes
+   conductor f9ead236950f   pid 1       2.0s ago  (leader)
+   conductor 0f6e4af65bfe   pid 1       1.9s ago
+   worker    7c5ee66fef56   pid 1       2.0s ago
+   worker    cc2161b38318   pid 1       1.9s ago
+   worker    d60dc15471bb   pid 1       1.7s ago
+   OK  2 conductors + 3 workers live
+   OK  exactly one leader
+   OK  all heartbeats inside the 15s window
+
+== schema
+   OK  9 tables
+   OK  3 partial indexes on delivery
+
+== clock
+   20.19 virtual s over 1.020 real s (expected ~20.39)
+   OK  virtual time advances at 20x
+   OK  frozen while paused
+   OK  no jump across the pause
+
+== delivery pipeline
+   OK  3 consumers seeded at creation
+   OK  1498 deliveries reached 'delivered'
+   OK  decision feed is populated
+   243 buckets (0..242) x 3 consumers, 1498 attempts
+   OK  metric buckets are contiguous and complete
+
+== served bundle
+   OK  SPA index served
+   OK  unknown /api path 404s rather than serving the shell
+```
+
+It works against the deployment too. The replica counts differ, so pass the expected ones — and the
+schema section is skipped, since there is no direct psql route to a Railway database:
 
 ```bash
-EXPECTED_PROCESSES=4 ./scripts/verify.sh https://api-production-7c78a.up.railway.app
+EXPECTED_WORKERS=2 ./scripts/verify.sh https://api-production-7c78a.up.railway.app
 ```
 
-```
-== health             api up, database reachable
-== processes          5 live (2 conductors + 3 workers), exactly one leader
-== schema             9 tables, 3 partial indexes on delivery
-== clock              +20.16 virtual s per real second at 20x
-                      frozen while paused; no jump across the pause
-== delivery pipeline  3 consumers seeded at creation
-                      1513 deliveries reached 'delivered'; decision feed populated
-                      241 buckets (0..240) x 3 consumers, contiguous and complete
-== served bundle      SPA index served; unknown /api path 404s
-```
-
-Two of those checks exist because the failures they catch are **invisible**, and both are in the metrics
-path — the one component of this system that can lie convincingly. Everything else announces itself:
-nothing gets delivered, or the backlog never drains, or a process crashes. A metrics bug produces a
-chart that is smooth, plausible and wrong.
-
-- **Contiguity.** A gap in `bucket_virtual_s` is a hole in the chart that a client cannot distinguish
-  from a zero. Rows are written as the full consumer × bucket cross product so it never has to guess.
-- **Counters are derived, not sampled.** A conductor pass covers `interval × speed` virtual seconds — a
-  whole bucket at the shipped defaults — so writing "the current bucket's count" undercounts attempts by
-  a roughly constant factor. On a *100% stacked* chart, an equal undercount across three consumers draws
-  a picture that looks exactly right. So they come from two grouped queries over `attempt.started_at`
-  and `delivery.completed_at` instead, and the invariant is exact:
-
-  ```
-  SUM(metrics_snapshot.attempts)  ==  COUNT(attempt)     -- over the written bucket range
-  13001                           ==  13001
-  ```
-
-The clock is the check worth reading carefully. It is the only Phase 0 output that three separate
-processes have to agree on, and a wrong answer there is invisible until Phase 3, where it presents as a
-*fairness* bug rather than a clock bug.
-
-[`scripts/check_clock.py`](scripts/check_clock.py) is deliberately **latency-aware**. The naive form of
-this check — read, sleep a second, read, assert ~20 — only holds on localhost: every read is a round
-trip, and at 20x a 265ms RTT is worth five virtual seconds, so it fails against a deployed URL on a
-clock that is perfectly correct. It asserts the invariant that holds everywhere instead, timestamping
-each sample at the midpoint of its request window:
-
-```
-virtual elapsed  ==  wall elapsed  x  speed_multiplier
-```
-
-Against Railway that lands within 0.1 virtual seconds — which is a much stronger statement about the
-derived clock than the localhost version ever was.
+The clock and metrics checks are the ones worth reading: they are the two places this system can fail
+*silently*, producing a chart that is smooth, plausible and wrong. Everything else announces itself.
+[`scripts/check_clock.py`](scripts/check_clock.py) is latency-aware on purpose — the naive form of the
+check only holds on localhost. See [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) for why the metrics
+counters are derived rather than sampled.
 
 ## Layout
 
@@ -157,29 +220,37 @@ app/
     registry.py   self-registration + heartbeats
     runner.py     the shared entrypoint: register, heartbeat, loop, drain on SIGTERM
   api/
+    main.py       the FastAPI app, the producer's lifespan, and the SPA mount
     routes.py     the read/write plane
     ingest.py     ledger write + fan-out, in one transaction
-    producer.py   the demo traffic generator, in the process that owns ingest
+    producer.py   the traffic generator, in the process that owns ingest
     schemas.py    the frozen response models
   conductor/
     leader.py     pg_try_advisory_lock, held on the connection it writes through
-    admission.py  the budget, the candidate query, the ready flip
+    policy.py     max_staleness_s and latest_by_key, evaluated at dispatch
+    admission.py  the budget, the candidate query, the fair allocation, the ready flip
     metrics.py    derived counters, sampled gauges, backfill on failover
     service.py    one pass: lead, measure, admit
   worker/
     transport.py  the ConsumerTransport seam: simulated, and an HTTP stub
     claim.py      SKIP LOCKED claim, lease, and the completion state machine
     service.py    one iteration: claim, gather, complete
+frontend/src/
+  App.tsx         layout, run identity in the URL
+  api/            the DataSource seam: live (polling) and replay (fixtures)
+  hooks/useRun.ts all polling and derived state, in one place
+  transform/      API rows -> chart series
+  components/     the two charts, consumer cards, decision feed, process strip, controls
+  fixtures/       a complete recorded run, generated from the Pydantic models
 alembic/          one migration
 scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh
-frontend/         Vite + React stub, and the committed fixtures Track B builds against
 ```
 
-## The frozen contract
+## The API contract
 
-`app/api/schemas.py` is the Phase 0 deliverable that matters most: freezing these shapes is what lets
-the frontend and backend proceed in parallel. `frontend/src/fixtures/*.json` are generated **from those
-models**, so a fixture cannot drift from the contract, and `openapi.json` is committed alongside.
+`app/api/schemas.py` holds the response models. `frontend/src/fixtures/*.json` are generated **from
+those models**, so a fixture cannot drift from the contract, and `openapi.json` is committed alongside
+as the generated witness of it. `make fixtures-check` fails if either is stale.
 
 ```
 POST   /api/simulation                                create (= reset), seeds consumers + policies
@@ -193,101 +264,17 @@ GET    /api/process                                   live processes, 15s heartb
 GET    /api/health
 ```
 
-The fixtures are **outage-shaped, not placeholder-shaped**: three consumers, an outage at 2:00, recovery
-at 7:00, with attempts split as equal thirds while all three are backlogged and Clover's segment
-correctly falling to zero once it drains. A chart tuned against flat placeholder data looks wrong the
-moment real data arrives.
-
-```
-Acme Analytics   delivered=3832  expired=0     superseded=0    caught up after 173s
-Bolt Billing     delivered=2571  expired=737   superseded=517  caught up after  82s
-Clover CRM       delivered=508   expired=0     superseded=0    caught up after  27s
-```
-
-Regenerate with `uv run python scripts/gen_fixtures.py`. The RNG is seeded, so the diff is empty unless
-the shape genuinely changed.
-
-## Decisions made in Phase 1
-
-- **Leadership is the connection, not a flag.** `pg_try_advisory_lock` is session-scoped, and every
-  conductor write goes through the connection the lock is held on — never `session_scope()`. So fencing
-  is automatic rather than implemented: losing the lock and losing the ability to write are the *same
-  event*, and there is no window in which a demoted leader can still write. A lock table with an expiry
-  would need a fencing token on every write to be equally safe; this makes that class of bug
-  unrepresentable. It is also why failover needs no failure detector — a killed process closes its
-  socket, and Postgres drops the lock with it.
-- **The bucket key comes from a fixed origin.** `sim.virtual_epoch` is *rebased* on every pause, resume
-  and speed change — that is how the derived clock keeps virtual time continuous across them. Bucketing
-  against it would renumber the whole series the first time anyone touched the speed slider: new rows
-  collide with old ones through the upsert, and `?since_bucket=` stops being monotonic, which freezes
-  the chart. Buckets key off `VIRTUAL_EPOCH_ZERO`, the same origin behind `virtual_now_s`.
-- **The metrics cursor is read from the table, not from memory.** `MAX(bucket_virtual_s)` per
-  simulation, cached in memory only as an optimisation. A new leader has no memory of the old one's
-  progress, so deriving it is what makes failover *backfill* the gap rather than strand it — a
-  memory-only cursor leaves a permanent hole in the chart at exactly the moment the demo is showing off
-  failover. Capped at 300 buckets per pass so a long gap catches up over several passes.
-- **Attempts are recorded at claim time, not completion.** The fairness window counts attempts
-  *started*, and batching the insert into the claim transaction makes that free rather than an extra
-  write. It also means admission has to subtract the outstanding `ready` buffer from its rate budget:
-  work already admitted has no `attempt` row yet, so a pure window count would admit against the same
-  budget twice. That subtraction is a read-modify-write — which is the actual reason the conductor must
-  be a singleton, rather than tidiness.
-- **The workers batch; the conductor does not deepen its buffer.** Per-attempt round trips do not
-  survive 20×, so an iteration is one claim transaction, then every transport call concurrently, then
-  one completion transaction. The claim commits *before* any transport runs, so no row lock is ever held
-  across the network. And because the work stays inside a single `loop_body` call rather than escaping
-  into background tasks, the runner's existing drain guarantee still covers it with no task bookkeeping.
-- **The admission ceiling is the loop interval, not the buffer depth.** Available throughput is
-  `ready buffer depth ÷ conductor_loop_interval_s`. The buffer must stay shallow — its depth *is* the
-  granularity of fairness — so the interval is the only free variable: 0.05s gives ~720 attempts/s
-  against ~600/s of demand at 20×. Raise it and the backlog stops draining, which presents as a
-  scheduler bug rather than a tuning problem. Worth knowing which knob it is.
-- **Consumer seeding moved from Phase 3 to here.** Not a choice — fan-out reads `subscription`, so a
-  simulation with no consumers accepts events and delivers them to nobody. Policies came along for free
-  and are read at dispatch time by the conductor.
-- **Finished runs retire themselves.** A conductor pass covers *every* running simulation, so one that
-  nobody retires goes on costing throughput forever — and the cost lands on whichever run a reviewer is
-  currently watching. Every visit to the deployment leaves another one behind, so it compounds. Also
-  deployment-only: see below.
-- **The transport is finished, not stubbed.** `SimulatedTransport` handles latency, jitter, failure
-  rates and a `down` flag, and the worker handles every outcome — deliver, retry with backoff, fail at
-  the cap. Seeded consumers have `sim_failure_rate = 0.0`, so Phase 1 still *observes* "always 200"; the
-  state machine is simply complete. The RNG is seeded from `(simulation_id, delivery_id, attempt_no)`
-  rather than carried as transport state, so an attempt's outcome does not depend on which worker picked
-  it up or how the batch interleaved — otherwise every retry test is a coin flip.
-
-## Decisions frozen in Phase 0
-
-Recorded because they are expensive to reverse. Full reasoning in `TECHNICAL_DESIGN.md`.
-
-- **The clock is derived, never stored.** Virtual time is wall time with an epoch and a multiplier,
-  computed locally in every process from four fields on the `simulation` row. No coordination, no
-  barrier. `Clock.sleep()` is the other half: 200 virtual ms at 20× is 10 real ms, so a worker genuinely
-  holds its lease for the duration. Nothing outside `app/core/clock.py` reads the wall clock — enforced
-  by a ruff rule, because it is unenforceable once there are fifty call sites.
-- **Enums are `TEXT` + `CHECK`**, not native Postgres enums. `attempt.outcome` is a live candidate to
-  gain `lease_expired`; `terminal_reason` is inherently open-ended. Adding a value to a native enum needs
-  a migration, a `CHECK` needs an edit.
-- **IDs are `bigint` except `simulation` and `process`, which are UUIDs** — the two things generated
-  without a database round-trip, and which appear in URLs.
-- **`/decisions` takes `?limit=`, not `?since_id=`.** `delivery.id` is assigned at *ingest*, not at
-  completion, so a cursor over it would silently skip decisions. `/metrics?since_bucket=` keeps its
-  cursor — `bucket_virtual_s` genuinely is monotonic.
-- **Process liveness is a read-time filter, not a reaper.** Stale rows accumulate harmlessly and are
-  never read, which keeps the design's claim — *nothing in the delivery path consults it* — literally
-  true rather than approximately true.
-- **Graceful SIGTERM drain.** Lease reaping is out of scope, so a worker dying mid-attempt strands
-  `in_flight` rows. Finishing the current iteration on SIGTERM means the one shutdown path we control
-  strands nothing.
-- **Migrations run once, from a dedicated one-shot step.** Three services racing `alembic upgrade head`
-  on boot can deadlock: compose gates on `service_completed_successfully`, Railway on a pre-deploy
-  command on `api` only.
-
 ## Deploy (Railway)
 
 One repo → one image → three services differing only by start command, sharing the Postgres plugin's
 injected `DATABASE_URL`. `app/core/settings.py` normalizes what Railway injects — the `postgresql://`
 scheme needs `+asyncpg`, and asyncpg rejects the `sslmode` parameter libpq-style URLs carry.
+
+| Service | Command | Replicas |
+|---|---|---|
+| `api` | `alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` | 1 |
+| `conductor` | `python -m app.conductor` | 2 — one leads, one stands by on the advisory lock |
+| `worker` | `python -m app.worker` | 2 — the free tier's ceiling; compose runs 3 |
 
 The topology is [`.railway/railway.ts`](.railway/railway.ts) — Infrastructure-as-Code, applied from the
 CLI:
@@ -305,58 +292,15 @@ railway config apply --yes
 railway up --service api --detach               # and conductor, worker
 ```
 
-| Service | Command | Replicas |
-|---|---|---|
-| `api` | `alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` | 1 |
-| `conductor` | `python -m app.conductor` | 2 — one leads, one stands by on the advisory lock |
-| `worker` | `python -m app.worker` | 3 |
-
-Then `make verify API=https://…` against the public URL.
-
 **Why IaC rather than `railway.json`.** A root `railway.json` applies to *every* service in the project,
 so it cannot give three services three different start commands, and the per-service config-file path is
-a dashboard-only setting. IaC is the only form the CLI can apply. It is also the non-deprecated one —
+a dashboard-only setting. IaC is the only form the CLI can apply, and the non-deprecated one —
 config-as-code stops working 2026-12-01.
 
-**Why migrations are in the api's start command.** The plan called for a Railway pre-deploy command on
-`api` only. The IaC DSL has no `preDeployCommand` (Railway's own `config migrate` comments the field
-out), and putting it in `railway.json` would apply it to all three services and reintroduce exactly the
-race the one-shot step exists to prevent. Running it in the api's start command — with `api` pinned to a
-single replica — keeps the guarantee that migrations run once from one place, and has the side benefit
-of being platform-independent rather than a Railway feature.
-
-### What deploying actually caught
-
-None of these would have been distinguishable from a *business logic* bug had they surfaced in Phase 3.
-This is the entire argument for deploying before there is anything interesting to deploy.
-
-**Phase 1: abandoned simulations starve the live one.** Locally there is one simulation and everything
-drains in 45 seconds. On the deployment, every `verify.sh` run and every reviewer visit leaves a
-`running` simulation behind — and the conductor schedules *all* of them in a single pass, so each one
-divides the admission throughput. It presented as a backlog that tracked its arrival rate exactly and
-never drained: 12.4 attempts/virtual second against a budget of 30, with the ready buffer pinned at 4 of
-its 36-slot target. That reads like a broken scheduler, and it is not — it is the admission-ceiling
-invariant, arrived at from an unexpected direction.
-
-The fix is the `done` transition the phase plan had put in Phase 3: a run retires once the script has
-ended and its backlog is zero, plus a virtual-time backstop for a run that will never drain. Both terms
-of that condition are load-bearing — retiring on an empty backlog alone *races the producer*, which at
-20× commits another ~20 deliveries in the time one pass takes, so the run freezes with a small residue
-that looks exactly like a failure to drain. So the producer stops at the end of the script, and only
-then is the zero stable.
-
-**Phase 0, all four invisible locally:**
-
-| Problem | How it presented | Fix |
-|---|---|---|
-| Boot ordering is not guaranteed | Worker came up mid-migration and died inserting into a table that did not exist yet | The runner retries registration with capped backoff — also the right production behaviour when a database blinks |
-| Railway's start-command parser does no POSIX expansion | `${PORT:-8000}` reached the process as that literal string; uvicorn exited on the unparseable port, silently | Everything shell-shaped moved into `scripts/start-api.sh`, which `docker run` can test |
-| Railway silently re-detects the builder | Worker built with Railpack → `No interpreter found for Python ==3.12.*`, for a repo with a working Dockerfile at its root | Pinned `RAILWAY_DOCKERFILE_PATH` |
-| Free tier caps replicas at 2 | Worker at 3 replicas rejected outright, with no logs at all | Railway runs 2; compose still runs 3. Workers are stateless, so this is a capacity difference and nothing else |
-
-Compose gates the workers on the migrate step with `service_completed_successfully`; Railway starts
-every service concurrently. Neither platform guarantees ordering, so the runner treats a missing schema
-as a transient condition to wait out rather than a reason to exit.
+**Why migrations run from the api's start command.** The IaC DSL has no `preDeployCommand`, and putting
+one in `railway.json` would apply it to all three services and reintroduce the boot race the one-shot
+step exists to prevent. Running it in the api's start command — with `api` pinned to a single replica —
+keeps migrations running once from one place, and is platform-independent rather than a Railway feature.
 
 ## CI/CD
 
@@ -365,37 +309,23 @@ request and push, the fourth only on `main`.
 
 | Job | What it protects |
 |---|---|
-| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture Phase 3's scheduler tests are built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the frozen contract cannot drift out from under the frontend track. |
-| **frontend** | `tsc -b && vite build` |
-| **image** | Builds the Dockerfile, then **boots it**: starts Postgres, runs the real `scripts/start-api.sh`, waits for `/api/health`, and checks a worker registers. A green `docker build` only says the image compiles. This job exists because the Dockerfile is what actually ships and it has broken twice in ways nothing else caught — a missing `README.md` that hatchling needed, and a builder that silently was not the Dockerfile at all. |
-| **deploy** | `main` only, gated on the other three. Deploys api → conductor → worker via [`scripts/deploy_railway.sh`](scripts/deploy_railway.sh), then runs the same `verify.sh` against the public URL. |
+| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture every scheduler test is built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the contract cannot drift out from under the frontend. |
+| **bundle** | `npm run build`, which is `tsc -b && vite build` — so the frontend type-checks here too. `oxlint` and the `transform/` unit tests run locally through `make check`, not in CI. |
+| **image** | Builds the Dockerfile, then **boots it**: starts Postgres, runs the real `scripts/start-api.sh`, waits for `/api/health`, and checks a worker registers. A green `docker build` only says the image compiles, and the Dockerfile is what actually ships. |
+| **deploy** | `main` only, gated on the other three. Deploys api → conductor → worker via [`scripts/deploy_railway.sh`](scripts/deploy_railway.sh), then runs `verify.sh` against the public URL. |
 
 `railway up --detach` returns before a deployment is healthy and **exits 0 even when the deployment
 then fails**, which in CI is indistinguishable from success. `deploy_railway.sh` polls to a terminal
 state and dumps build and deploy logs on anything but `SUCCESS`.
 
-### One-time setup
-
-The deploy job is inert until a token exists:
+**One-time setup.** The deploy job is inert until a token exists:
 
 1. **`RAILWAY_TOKEN`** — Settings → Secrets and variables → Actions → *New repository secret*. Create
    the token in Railway under the project's Settings → Tokens, scoped to the `production` environment.
-2. **`RAILWAY_PUBLIC_URL`** *(optional)* — a repository **variable** (not a secret), e.g.
-   `https://api-production-7c78a.up.railway.app`. Present, the deploy runs `verify.sh` against it;
-   absent, that step is skipped.
-3. The job targets a `production` **environment**, so required reviewers or a deployment branch rule
-   can be added from Settings → Environments without editing the workflow.
+2. **`RAILWAY_PUBLIC_URL`** *(optional)* — a repository **variable** (not a secret). Present, the deploy
+   runs `verify.sh` against it; absent, that step is skipped.
+3. The job targets a `production` **environment**, so required reviewers or a deployment branch rule can
+   be added from Settings → Environments without editing the workflow.
 
-Each `railway up` triggers its own image build, so a merge to `main` costs three Railway builds. If
-that is too much on the free tier, delete the `conductor` and `worker` steps — they only need
-redeploying when their code changes — or drop the `deploy` job entirely and connect the services to
-GitHub directly with `railway service source connect --repo <owner>/<repo> --branch main`, which moves
-CD to Railway's own integration and out of Actions.
-
-## Next
-
-**Phase 4** — polish, docs and the walkthrough video. A tuning pass on the scenario so the demo reads on
-first watch, the README's "what am I looking at" for a reviewer landing cold, `DESIGN_RATIONALE.md` on
-the coalescing tradeoff and what was scoped out, and ~5 minutes of video. Thirty seconds of that is worth
-spending on what was deliberately *not* built — lease reclamation is designed and documented but absent,
-and saying so is stronger than hoping nobody asks.
+Each `railway up` triggers its own image build, so a merge to `main` costs three Railway builds. To cut
+that, drop the `conductor` and `worker` steps — they only need redeploying when their code changes.

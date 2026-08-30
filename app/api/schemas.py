@@ -1,12 +1,11 @@
 """The frozen API contract.
 
-Phase 0's single most valuable output: freezing these shapes is what lets the
-frontend and the backend proceed in parallel for the rest of the project. The
+These shapes are the boundary between the backend and the frontend. The
 committed fixtures in ``frontend/src/fixtures/`` are generated *from these
 models*, so they cannot drift from the contract.
 
-Changing a field here after Phase 0 is a breaking change to work already in
-flight on the other track. Add before you rename.
+Changing a field here is a breaking change to the frontend. Add before you
+rename.
 """
 
 from __future__ import annotations

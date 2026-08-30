@@ -1,8 +1,8 @@
 # Local development entry points.
 #
 # The whole system is `make up`. Everything else here is a shortcut for a
-# command that already exists -- nothing in this file is load-bearing, so a
-# reviewer who ignores it entirely still gets the same results from the README.
+# command that already exists -- nothing in this file is load-bearing, so the
+# README's commands work whether or not you go through make.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -190,7 +190,7 @@ fixtures-check: ## Fail if the committed fixtures are stale
 	@echo "fixtures up to date"
 
 # --------------------------------------------------------------------------
-# Verification (the Phase 0 exit criteria)
+# Verification
 # --------------------------------------------------------------------------
 
 .PHONY: verify

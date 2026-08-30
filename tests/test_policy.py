@@ -8,8 +8,9 @@ UI draws, which is exactly the profile of a bug that ships.
 
 The cast is the shipped one (``app.core.scenario.CONSUMERS``) rather than a
 fixture built to pass: Acme carries no policies, Bolt coalesces
-``customer.subscription.updated`` and bounds ``balance.available`` at 120s, and
-the pair of them under the same event stream is the comparison the demo makes.
+``customer.subscription.updated`` and bounds ``balance.available``, and the
+pair of them under the same event stream is the comparison the second claim
+rests on.
 """
 
 from __future__ import annotations
@@ -51,8 +52,8 @@ BOLT_STALENESS_S = next(
 #: Bolt coalesces this by entity key; Acme does not.
 COALESCE_TYPE = "customer.subscription.updated"
 
-#: Far enough past Bolt's 120s bound that no test is measuring a boundary it
-#: did not mean to.
+#: Far enough past Bolt's staleness bound that no test is measuring a boundary
+#: it did not mean to.
 LONG_AGO = VIRTUAL_EPOCH_ZERO - timedelta(seconds=1000)
 
 #: Where a run's virtual clock sits a few milliseconds after it starts.
@@ -208,8 +209,8 @@ async def test_only_the_newest_of_a_key_survives(session: AsyncSession, connecti
     assert _states(bolt) == [DeliveryState.SUPERSEDED] * 4 + [DeliveryState.READY]
     assert _states(acme) == [DeliveryState.READY] * 5
 
-    # The reason names the winner, so the feed reads as a sentence a reviewer
-    # can check against the row it points at.
+    # The reason names the winner, so the feed reads as a sentence that can be
+    # checked against the row it points at.
     winner_id = bolt[-1][0]
     assert bolt[0][2] == f"superseded by delivery {winner_id}"
 
@@ -266,8 +267,7 @@ async def test_a_coalescing_consumer_still_fills_its_share(
     drop is not an attempt -- so a pass that rationed candidates instead would
     hand Bolt its share, watch policy eat almost all of it, and admit one or two
     deliveries while Acme took the rest. Bolt would then look starved by a
-    scheduler that was working correctly, which is the worst kind of bug to
-    debug on camera.
+    scheduler that was working correctly.
 
     So: every droppable row goes in the same pass that admits the survivors.
     """

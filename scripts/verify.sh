@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Check a running stack against the Phase 0 and Phase 1 exit criteria.
+# Check a running stack: health, processes, schema, clock, bundle.
 #
 #   ./scripts/verify.sh [base-url]
 #
 # Works against compose (the default) or a deployed Railway URL. The clock check
-# is the one that matters: it is the only Phase 0 output three separate
-# processes have to agree on, and a wrong answer is invisible until Phase 3,
-# where it presents as a fairness bug rather than a clock bug.
+# is the one that matters: virtual time is the only value three separate
+# processes have to agree on, and a wrong answer there does not present as a
+# clock bug -- it presents as a fairness bug.
 set -uo pipefail
 
 BASE="${1:-http://localhost:8000}"

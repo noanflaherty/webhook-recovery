@@ -4,7 +4,7 @@
  * Assigned by seeding order rather than by name, so a run with a renamed or
  * re-cast consumer still gets stable colours. The three are picked to stay
  * distinguishable in the common forms of colour blindness and to survive the
- * compression of a screen recording, since the video is the deliverable.
+ * compression of a screen recording.
  */
 import type { ConsumerRef } from './transform/series'
 
