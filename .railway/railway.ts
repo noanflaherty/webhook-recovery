@@ -31,11 +31,17 @@ const COMMON = { DATABASE_URL: preserve(), ...DOCKERFILE, ...DRAIN };
 
 export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: "sfo" });
+  // 2 GB, not the 500 MB this started at. Postgres defaults to
+  // max_wal_size = 1GB, so it grows pg_wal toward 1 GB before forcing a
+  // checkpoint -- on a 500 MB volume that is a latent misconfiguration rather
+  // than a capacity question, and it took the database down with
+  // "could not write to file pg_wal/xlogtemp: No space left on device" after
+  // an hour of nothing but heartbeats.
   const postgresVolume = volume("postgres-volume", {
     alerts: { usage: { "80": {}, "95": {}, "100": {} } },
     allowOnlineResize: true,
     region: "sfo",
-    sizeMB: 500,
+    sizeMB: 2000,
   });
 
   // A single script, not `alembic upgrade head && uvicorn ...`: Railway's
@@ -55,11 +61,13 @@ export default defineRailway(() => {
     env: { PORT: "8000", ...COMMON },
   });
 
-  // One conductor. Leader election lands in Phase 1, at which point this goes
-  // to 2 -- one leads, one stands by on the advisory lock.
+  // Two: one leads, one stands by on the advisory lock. This matches the live
+  // service (scaled outside this file) and what Phase 1's leader election
+  // needs. Declaring it here keeps `config apply` from silently scaling it
+  // back down as a side effect of an unrelated change.
   const conductor = service("conductor", {
     start: "python -m app.conductor",
-    replicas: 1,
+    replicas: 2,
     env: COMMON,
   });
 
