@@ -35,7 +35,7 @@ install: ## Install python and node dependencies
 # --------------------------------------------------------------------------
 
 .PHONY: up
-up: ## Build and run everything: postgres, migrate, api, conductor, 3 workers
+up: ## Build and run everything; UI and API together on :8000
 	$(COMPOSE) up --build --scale worker=$(WORKERS)
 
 .PHONY: up-d
@@ -81,9 +81,26 @@ conductor: ## Run one conductor
 worker: ## Run one worker
 	$(UV) run python -m app.worker
 
+# Two ways to get the UI, and they answer different questions.
+#
+# `make up` is the product: one container builds the bundle and serves it beside
+# the API on :8000, which is what Railway runs and what `verify.sh` asserts.
+# `make web` is the dev loop: Vite with hot reload on :5173, proxying /api to
+# whatever is on :8000 -- so it composes with either `make up` or `make api`.
+# Point it elsewhere with VITE_API_TARGET, which is how two stacks can run side
+# by side on one machine.
 .PHONY: web
 web: ## Run the Vite dev server on :5173, proxying /api to :8000
 	$(NPM) run dev
+
+# No API, no database, no containers. The UI runs against the committed
+# fixtures in frontend/src/fixtures/, replayed against a local virtual clock --
+# a full outage-and-recovery run in about 32 real seconds. This is the fastest
+# way to see the charts, and the only one that still works when the backend is
+# broken or half-written.
+.PHONY: web-replay
+web-replay: ## Run the UI on :5173 against the recorded fixtures -- no backend needed
+	$(NPM) run dev -- --open '/?source=replay'
 
 .PHONY: psql
 psql: ## Open a psql shell on the compose database
@@ -114,7 +131,7 @@ migration-check: ## Fail if the models have drifted from the migrations
 # --------------------------------------------------------------------------
 
 .PHONY: check
-check: lint typecheck test ## lint + typecheck + test
+check: lint typecheck test check-web ## Everything: backend lint + typecheck + test, then frontend
 
 .PHONY: lint
 lint: ## Lint and check formatting
@@ -133,6 +150,25 @@ typecheck: ## mypy, strict, over app/
 .PHONY: test
 test: ## Run the test suite
 	$(UV) run pytest
+
+# The frontend half of `make check`. Kept as its own target because it is the
+# half that needs `npm install` rather than `uv sync`, so a failure here is
+# usually a missing node_modules rather than a real defect.
+#
+# `build-web` is the type-check: `npm run build` is `tsc -b && vite build`, the
+# same command the Dockerfile's node stage runs. Checking it here means a type
+# error surfaces in seconds locally instead of several minutes into an image
+# build.
+.PHONY: check-web
+check-web: web-lint build-web web-test ## Frontend: lint, type-check + build, unit tests
+
+.PHONY: web-lint
+web-lint: ## Lint the frontend
+	$(NPM) run lint
+
+.PHONY: web-test
+web-test: ## Run the frontend unit tests
+	$(NPM) run test
 
 .PHONY: build-web
 build-web: ## Type-check and build the frontend bundle

@@ -27,5 +27,7 @@ yarn-error.log*
 .vscode/
 .DS_Store
 
-# Claude
-.claude/worktrees/
+# Claude -- worktrees, and local working notes like .claude/OUTSTANDING.md.
+# Nothing under here is tracked, so ignoring the whole directory keeps working
+# notes about known defects out of a repo that is itself the submission.
+.claude/

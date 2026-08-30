@@ -8,6 +8,11 @@
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
+    /* The fixtures are imported as modules so the replay data source is typed
+       against the same contract as the live one -- a fixture that drifts from
+       app/api/schemas.py becomes a compile error rather than a blank chart. */
+    "resolveJsonModule": true,
+
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -17,6 +22,7 @@
     "jsx": "react-jsx",
 
     /* Linting */
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,

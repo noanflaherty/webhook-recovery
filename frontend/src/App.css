@@ -1,21 +1,35 @@
+/*
+ * Phase 2 owns the instrument, Phase 4 owns the polish.
+ *
+ * The token set is the Phase 0 stub's, extended rather than replaced -- the
+ * chart colours live in theme.ts because both charts and the consumer cards
+ * have to agree on them, and a colour that exists in two places will disagree.
+ */
+
 :root {
   color-scheme: light dark;
   --fg: #1a1a1a;
   --muted: #6b7280;
   --bg: #fbfbfa;
+  --panel: #ffffff;
   --line: #e5e5e3;
   --ok: #15803d;
   --err: #b91c1c;
+  --warn: #b45309;
+  --accent: #3b7dd8;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --fg: #ededec;
     --muted: #9a9a97;
-    --bg: #17171a;
+    --bg: #141417;
+    --panel: #1b1b1f;
     --line: #2e2e33;
     --ok: #4ade80;
     --err: #f87171;
+    --warn: #fbbf24;
+    --accent: #6aa2ee;
   }
 }
 
@@ -26,86 +40,375 @@ body {
   font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
-.stub {
-  max-width: 46rem;
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+select,
+input {
+  font: inherit;
+  color: inherit;
+  accent-color: var(--accent);
+}
+
+select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.3rem;
+}
+
+/* -- shell ---------------------------------------------------------------- */
+
+.app {
+  max-width: 62rem;
   margin: 0 auto;
-  padding: 3rem 1.5rem;
+  padding: 1.75rem 1.25rem 4rem;
+}
+
+.titlebar {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
 }
 
 h1 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.15rem;
   letter-spacing: -0.02em;
 }
 
-.subtitle {
-  margin: 0.25rem 0 2.5rem;
-  color: var(--muted);
-}
-
-section {
-  border-top: 1px solid var(--line);
-  padding-top: 1.25rem;
-  margin-bottom: 2rem;
-}
-
 h2 {
-  margin: 0 0 0.75rem;
-  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   color: var(--muted);
 }
 
-dl {
-  display: grid;
-  grid-template-columns: 5rem 1fr;
-  gap: 0.25rem 1rem;
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-dt {
-  color: var(--muted);
-}
-
-dd {
-  margin: 0;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-th {
-  text-align: left;
-  font-weight: 500;
-  color: var(--muted);
+.caption {
+  margin: 0 0 0.85rem;
   font-size: 0.8125rem;
-  padding-bottom: 0.4rem;
-}
-
-td {
-  padding: 0.3rem 0;
-  border-top: 1px solid var(--line);
-}
-
-.badge {
-  margin-left: 0.4rem;
-  padding: 0.05rem 0.35rem;
-  border: 1px solid var(--line);
-  border-radius: 0.25rem;
-  font-size: 0.6875rem;
   color: var(--muted);
+  max-width: 54rem;
 }
 
-.ok {
-  color: var(--ok);
+.subtitle {
+  margin: 0.4rem 0 1.5rem;
+  color: var(--muted);
+  max-width: 34rem;
+}
+
+.muted {
+  color: var(--muted);
 }
 
 .error {
   color: var(--err);
+  font-size: 0.8125rem;
+  margin: 0 0 1rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  padding: 0.9rem 1rem 0.7rem;
+  margin-bottom: 1rem;
+}
+
+/* -- chips ---------------------------------------------------------------- */
+
+.chip {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chip.muted {
+  opacity: 0.8;
+}
+
+.chip.phase-outage,
+.chip.state-expired {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+}
+
+.chip.phase-recovery,
+.chip.state-superseded {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.chip.phase-normal,
+.chip.state-delivered {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+
+.chip.state-failed {
+  color: var(--err);
+}
+
+.chip.source-replay {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.chip.source-live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+/* -- control bar ---------------------------------------------------------- */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.clock {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+}
+
+.clock-time {
+  font-size: 1.35rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  min-width: 3.6rem;
+}
+
+.clock-rate {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.knobs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+}
+
+.knob {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+/* -- consumer cards ------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.card h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 0.15rem;
+  flex: none;
+}
+
+.card dl {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: 0.15rem 0.6rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.card dt {
+  color: var(--muted);
+}
+
+.card dd {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.card dd.big {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.policy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- decision feed -------------------------------------------------------- */
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 15rem;
+  overflow-y: auto;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.feed li {
+  display: grid;
+  grid-template-columns: 5.5rem 8rem minmax(10rem, 1fr) minmax(6rem, 1.2fr) 3.5rem;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.22rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.feed li:first-child {
+  border-top: none;
+}
+
+.feed-reason,
+.feed-event {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -- process strip -------------------------------------------------------- */
+
+.strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.proc {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.proc.leader {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.proc-kind {
+  font-weight: 600;
+}
+
+/* -- empty state ---------------------------------------------------------- */
+
+.empty {
+  padding: 4rem 0 0;
+  max-width: 34rem;
+}
+
+.empty h1 {
+  font-size: 1.5rem;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Same height as the chart it stands in for, so the layout does not jump when
+   the first bucket lands. */
+.chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 220px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* Recharts injects its own focus outline on the surface; drop it. */
+.recharts-wrapper:focus {
+  outline: none;
 }
