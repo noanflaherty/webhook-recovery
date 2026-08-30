@@ -36,6 +36,7 @@ import {
   OUTAGE_STARTS_AT_S,
   formatVirtual,
 } from '../scenario'
+import { LEGEND_STYLE, TOOLTIP_STYLE, faultHatch } from '../chartStyle'
 import { colorByName } from '../theme'
 import type { FairDrainFlip } from '../hooks/useRun'
 import { toShareWindows, type ConsumerRef } from '../transform/series'
@@ -48,6 +49,9 @@ interface Props {
 }
 
 const percent = (value: number) => `${Math.round(value * 100)}%`
+
+const FAULT_HATCH_ID = 'fault-hatch-share'
+const FAULT_HATCH = faultHatch(FAULT_HATCH_ID)
 
 export const ShareChart = memo(function ShareChart({
   buckets,
@@ -68,7 +72,9 @@ export const ShareChart = memo(function ShareChart({
     return (
       <section className="panel">
         <h2>Attempt share</h2>
-        <div className="chart-empty">Waiting for the conductor&rsquo;s first metrics bucket…</div>
+        <div className="well">
+          <div className="chart-empty">Waiting for the conductor&rsquo;s first metrics bucket…</div>
+        </div>
       </section>
     )
   }
@@ -81,106 +87,121 @@ export const ShareChart = memo(function ShareChart({
         drain converges on equal thirds; a drained consumer's band correctly goes to zero, and the
         gap is the outage, when nobody attempted anything.
       </p>
-      <ResponsiveContainer width="100%" height={220}>
-        <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-          <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />
-          <XAxis
-            dataKey="t"
-            type="number"
-            domain={['dataMin', 'dataMax']}
-            tickFormatter={formatVirtual}
-            stroke="var(--muted)"
-            fontSize={11}
-          />
-          <YAxis
-            domain={[0, 1]}
-            ticks={[0, 0.25, 0.5, 0.75, 1]}
-            tickFormatter={percent}
-            stroke="var(--muted)"
-            fontSize={11}
-            width={48}
-          />
-          <Tooltip
-            labelFormatter={(label) => `t = ${formatVirtual(Number(label))}`}
-            formatter={(value: unknown) => (typeof value === 'number' ? percent(value) : '—')}
-            contentStyle={{
-              background: 'var(--bg)',
-              border: '1px solid var(--line)',
-              borderRadius: 6,
-              fontSize: 12,
-            }}
-          />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          {/*
-            The same band as the backlog chart, so the hole in the areas reads
-            as "the provider was down" rather than as missing data. Without it
-            the most defensible thing this chart does -- refusing to draw a share
-            of zero attempts -- looks like the chart failing to load.
-          */}
-          {bandEnd > OUTAGE_STARTS_AT_S && (
-            <ReferenceArea
-              x1={OUTAGE_STARTS_AT_S}
-              x2={bandEnd}
-              fill="var(--err)"
-              fillOpacity={0.07}
-              label={{ value: 'provider down', fill: 'var(--muted)', fontSize: 11 }}
+      <div className="well">
+        <ResponsiveContainer width="100%" height={214}>
+          <AreaChart data={data} margin={{ top: 10, right: 14, bottom: 2, left: 0 }}>
+            <defs>{FAULT_HATCH}</defs>
+            <CartesianGrid stroke="var(--rule)" strokeDasharray="1 5" vertical={false} />
+            <XAxis
+              dataKey="t"
+              type="number"
+              domain={['dataMin', 'dataMax']}
+              tickFormatter={formatVirtual}
+              stroke="var(--rule)"
+              tick={{ fill: 'var(--faint)', fontSize: 9 }}
+              tickLine={{ stroke: 'var(--rule)' }}
+              minTickGap={44}
             />
-          )}
-          {equalShare !== null && (
-            <ReferenceLine
-              y={equalShare}
-              stroke="var(--muted)"
-              strokeDasharray="4 4"
-              label={{
-                value: 'equal share',
-                position: 'insideTopRight',
-                fill: 'var(--muted)',
-                fontSize: 10,
-              }}
+            <YAxis
+              domain={[0, 1]}
+              ticks={[0, 0.25, 0.5, 0.75, 1]}
+              tickFormatter={percent}
+              stroke="var(--rule)"
+              tick={{ fill: 'var(--faint)', fontSize: 9 }}
+              tickLine={{ stroke: 'var(--rule)' }}
+              width={46}
             />
-          )}
-          {/*
-            Where the scheduler changed underneath the data. The chart is the
-            argument, and an argument that needs narrating over is weaker than
-            one you can point at: with the marker, the re-balance is a single
-            image rather than a claim about what happened off-screen.
+            <Tooltip
+              labelFormatter={(label) => `t = ${formatVirtual(Number(label))}`}
+              formatter={(value: unknown) => (typeof value === 'number' ? percent(value) : '\u2014')}
+              cursor={{ stroke: 'var(--dim)', strokeDasharray: '2 3' }}
+              contentStyle={TOOLTIP_STYLE}
+            />
+            <Legend iconType="plainline" wrapperStyle={LEGEND_STYLE} />
+            {/*
+              The same span as the backlog chart, so the hole in the areas reads
+              as "the provider was down" rather than as missing data. Without it
+              the most defensible thing this chart does -- refusing to draw a
+              share of zero attempts -- looks like the chart failing to load.
 
-            Each marker names the state it moved *into*, and is coloured to
-            match. "toggled" alone would say that something changed without
-            saying which way -- and on a run with more than one flip, that
-            leaves the reader to infer the direction by alternating from a
-            starting state the chart never showed them.
-          */}
-          {fairDrainFlips.map((flip) => (
-            <ReferenceLine
-              key={`${flip.t}:${flip.enabled}`}
-              x={flip.t}
-              stroke={flip.enabled ? 'var(--ok)' : 'var(--warn)'}
-              strokeDasharray="3 3"
-              label={{
-                value: flip.enabled ? 'fair drain on' : 'fair drain off',
-                position: 'insideTopLeft',
-                fill: flip.enabled ? 'var(--ok)' : 'var(--warn)',
-                fontSize: 10,
-              }}
-            />
-          ))}
-          {consumers.map((consumer) => (
-            <Area
-              key={consumer.id}
-              type="monotone"
-              dataKey={consumer.name}
-              stackId="share"
-              stroke={colorByName(consumers, consumer.name)}
-              fill={colorByName(consumers, consumer.name)}
-              fillOpacity={0.55}
-              strokeWidth={1}
-              isAnimationActive={false}
-              connectNulls={false}
-            />
-          ))}
-        </AreaChart>
-      </ResponsiveContainer>
+              Hatched rather than tinted because the areas stack *over* it: a
+              flat wash under three translucent fills just shifts every consumer
+              colour inside the window, so the reader sees three slightly-wrong
+              colours instead of a marked region.
+            */}
+            {bandEnd > OUTAGE_STARTS_AT_S && (
+              <ReferenceArea
+                x1={OUTAGE_STARTS_AT_S}
+                x2={bandEnd}
+                fill={`url(#${FAULT_HATCH_ID})`}
+                fillOpacity={1}
+                label={{
+                  value: 'PROVIDER DOWN',
+                  fill: 'var(--alarm)',
+                  fillOpacity: 0.75,
+                  fontSize: 8.5,
+                  letterSpacing: '0.14em',
+                }}
+              />
+            )}
+            {equalShare !== null && (
+              <ReferenceLine
+                y={equalShare}
+                stroke="var(--dim)"
+                strokeDasharray="3 3"
+                label={{
+                  value: 'EQUAL SHARE',
+                  position: 'insideTopRight',
+                  fill: 'var(--dim)',
+                  fontSize: 8.5,
+                  letterSpacing: '0.12em',
+                }}
+              />
+            )}
+            {/*
+              Where the scheduler changed underneath the data. The chart is the
+              argument, and an argument that needs narrating over is weaker than
+              one you can point at: with the marker, the re-balance is a single
+              image rather than a claim about what happened off-screen.
+
+              Each marker names the state it moved *into*, and is coloured to
+              match. "toggled" alone would say that something changed without
+              saying which way -- and on a run with more than one flip, that
+              leaves the reader to infer the direction by alternating from a
+              starting state the chart never showed them.
+            */}
+            {fairDrainFlips.map((flip) => (
+              <ReferenceLine
+                key={`${flip.t}:${flip.enabled}`}
+                x={flip.t}
+                stroke={flip.enabled ? 'var(--ok)' : 'var(--signal)'}
+                strokeWidth={1.25}
+                label={{
+                  value: flip.enabled ? 'FAIR DRAIN ON' : 'FAIR DRAIN OFF',
+                  position: 'insideTopLeft',
+                  fill: flip.enabled ? 'var(--ok)' : 'var(--signal)',
+                  fontSize: 8.5,
+                  letterSpacing: '0.12em',
+                }}
+              />
+            ))}
+            {consumers.map((consumer) => (
+              <Area
+                key={consumer.id}
+                type="monotone"
+                dataKey={consumer.name}
+                stackId="share"
+                stroke={colorByName(consumers, consumer.name)}
+                fill={colorByName(consumers, consumer.name)}
+                fillOpacity={0.42}
+                strokeWidth={1}
+                isAnimationActive={false}
+                connectNulls={false}
+              />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
     </section>
   )
 })

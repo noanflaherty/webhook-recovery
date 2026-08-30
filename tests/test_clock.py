@@ -87,6 +87,33 @@ def test_pause_freezes_the_clock() -> None:
     assert virtual_s(paused, at(11)) == pytest.approx(20.0)
 
 
+def test_a_finished_run_freezes_the_clock_too() -> None:
+    """`done` is not-advancing just as much as `paused` is.
+
+    The conductor retires a drained run by writing `status='done'` alongside
+    `paused_at_virtual`, and `PATCH ... {"status": "done"}` does the same for a
+    manual finish -- both of them meaning "stop the clock". The clock used to
+    freeze only on PAUSED, so a retired run went on accruing virtual time for as
+    long as the process lived: a run whose last metrics bucket was at 15:00
+    reported a clock of 34:00 and climbing. Nothing crashed, which is why it
+    survived -- it just meant every duration derived from a finished run was a
+    different number each time it was asked for.
+    """
+    config = start_config(20.0, at_wall=T0)
+    finished = pause(config, at_wall=at(1))  # 20 virtual seconds in
+    finished = SimulationClockConfig(
+        status=SimStatus.DONE,
+        virtual_epoch=finished.virtual_epoch,
+        resumed_at_wall=finished.resumed_at_wall,
+        paused_at_virtual=finished.paused_at_virtual,
+        speed_multiplier=finished.speed_multiplier,
+    )
+
+    assert virtual_s(finished, at(1)) == pytest.approx(20.0)
+    # An hour of real time later, a finished run still reads the same.
+    assert virtual_s(finished, at(3601)) == pytest.approx(20.0)
+
+
 def test_pause_is_idempotent() -> None:
     """A double-click on the pause button must not lose time."""
     config = pause(start_config(20.0, at_wall=T0), at_wall=at(1))

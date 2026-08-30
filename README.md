@@ -35,10 +35,11 @@ Three consumers, each demonstrating exactly one thing:
 | **Bolt Billing** | all four event types | The second claim. Same stream as Acme, but its policies shrink the backlog *before* anything is sent. |
 | **Clover CRM** | `invoice.paid` only | The first claim. A small backlog that should not have to queue behind the other two. |
 
-**What to touch.** Start a run, then flip **Fair drain** mid-outage-recovery: the attempts-share chart
-changes slope within a tick, and Clover's segment goes from a sliver to an equal third. **Pause**,
-**speed** and **Force outage** are the other three knobs. If the backend is asleep, *view the recorded
-run* serves a committed fixture of a real run against a local clock — no backend needed.
+**What to touch.** Runs start on **Fair drain**, which is what the system does. Mid-outage-recovery, flip
+the scheduler to **FIFO** and back: the attempts-share chart changes slope within a tick, and Clover's
+segment collapses from an equal third to a sliver and recovers. **Pause**, **speed** and **Reset** are the
+other three knobs. If the backend is asleep, *view the
+recorded run* serves a committed fixture of a real run against a local clock — no backend needed.
 
 A representative fair run, with policy on:
 
@@ -239,8 +240,9 @@ frontend/src/
   App.tsx         layout, run identity in the URL
   api/            the DataSource seam: live (polling) and replay (fixtures)
   hooks/useRun.ts all polling and derived state, in one place
+  runs.ts         per-browser run history, in localStorage
   transform/      API rows -> chart series
-  components/     the two charts, consumer cards, decision feed, process strip, controls
+  components/     the two charts, consumer cards, controls, run list
   fixtures/       a complete recorded run, generated from the Pydantic models
 alembic/          one migration
 scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh

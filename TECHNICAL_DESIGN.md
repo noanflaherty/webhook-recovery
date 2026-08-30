@@ -475,7 +475,20 @@ outage duration, speed slider.
 
 Single page:
 
-1. **Control bar** — Play/Pause, speed, Fair drain toggle, Reset, phase indicator + virtual clock.
+1. **Transport** — virtual clock, scheduler toggle (FIFO / Fair drain), speed, Play/Pause, Reset, and a **phase
+   track**: the scripted run drawn to scale — normal, the hatched outage, recovery — with a playhead on it.
+
+   *(The track replaced a chip naming the current phase. The word was the least useful part of it: "provider down" is
+   already written across both plots, and what a label cannot give you is proportion — that the outage is a third of
+   the run, that recovery is most of it, and how far through the clock is. It is drawn on the charts' own x-axis so
+   the playhead and the band below it line up, and the cold-landing screen renders the same component without a
+   playhead, where it says what a run *is* better than the sentence it replaced.)*
+
+   *(The toggle ships as a two-arm segmented control rather than a "fair drain" checkbox. A checkbox names only one arm and
+   leaves the other as its absence, which is backwards here: the off arm is global FIFO — a real scheduler, and the
+   thing the entire comparison is against — not the lack of a feature. Runs start on fair drain, matching the server
+   default and the system's actual behaviour, so the demo flip is **to** FIFO: the naive arm is the hypothetical
+   being argued against, not the baseline this ships in.)*
 2. **Backlog over time** — one line per consumer. The shape of recovery.
 3. **Attempts share over time** — 100% stacked areas over 5-virtual-second windows. The fairness proof: with fair drain
    on and equal weights, segments are equal *whenever all three have backlog*. Once Clover drains, its segment correctly
@@ -487,11 +500,66 @@ Single page:
    over — so the display granularity matches the mechanism's rather than being chosen for looks. Shares are also computed
    before rendering rather than via a stacked `expand` offset, because the row total is legitimately zero for the whole
    outage and dividing by it draws nothing, which is indistinguishable from a consumer genuinely getting no share.)*
-4. **Consumer cards** — backlog, in-flight / cap, delivered / expired / superseded / failed, and **time to catch up**.
-5. **Process strip** — workers (heartbeat, in-flight count) and conductors (leader marked). Read-only; it exists so the
-   multi-process architecture is visible rather than claimed.
-6. **Decision feed** — recent terminal decisions ("superseded sub_123 ×14 → delivered latest", "expired 312 stale
-   balance.available"), so policy and recovery behaviour are legible, not just numeric.
+4. **Consumer cards** — who each consumer is and what it is there to demonstrate, **time to catch up**, delivered, and
+   expired / superseded / failed.
+
+   *(Backlog, peak backlog and in-flight/cap were specified here and were built, then cut. Panels 2 and 3 sit directly
+   beneath these cards and draw per-consumer backlog over time; a live counter that restates the line below it costs a
+   glance and settles nothing. What survives is the two numbers no chart carries, which are also exactly the two
+   claims: how long this consumer took to catch up, and how much of its backlog its own policies made unnecessary to
+   send — with `delivered` kept beside the drops purely as their denominator.)*
+
+5. **Run list** (`?view=runs`) — every run this browser has opened, with the scheduler arm named on each row, and
+   `retire` on the ones still going.
+
+   *(Not in the original spec, and it exists because of one: runs are already permanent and addressable by
+   `?sim=<uuid>`, so the before/after comparison is literally two URLs — and nothing was keeping them. The history is
+   client-side, in localStorage, because the server has no notion of a user; a `GET /api/simulation` listing would be
+   every run by everyone who ever opened the deployment, which is not what "my runs" means. The cost of that choice is
+   stated in the UI rather than hidden: the list does not survive clearing site data, does not follow you to another
+   browser, and can name a run the server has dropped — which renders as a `gone` row you can forget, not a filtered
+   one. `retire` is there because the producer feeds every `running` simulation, so abandoned runs spend the shared
+   attempt budget and slow down whichever run you are actually watching; a list of runs is the first place that is
+   visible.)*
+
+**Built and then removed.** Two further panels were specified here, shipped in Phase 2, and cut in Phase 3:
+
+- **Process strip** — workers (heartbeat, in-flight count) and conductors (leader marked), so the multi-process
+  architecture was visible rather than claimed.
+- **Decision feed** — recent terminal decisions ("superseded by 913", "stale by 43s (max 120s)"), so policy behaviour
+  was legible as sentences rather than only as counters.
+
+Both did their job during development and neither survived contact with the finished argument. The process strip proves
+something the page never disputes, and once the consumer cards carry per-consumer expired/superseded totals the feed is
+a slower way to read the same fact. They were removed to keep the page to the two claims and nothing else.
+
+`GET /api/simulation/{id}/decisions` and `GET /api/process` are **unchanged and still served** — `scripts/verify.sh`
+asserts against both, and they remain the honest way to inspect a run. What was removed is the decision to put them on
+the page, not the data. That is also why `completed_at` is still non-negotiable on every terminal write
+(`app/conductor/policy.py`, `app/worker/claim.py`): the route filters on it, and so does the metrics writer that feeds
+the counters the cards now carry.
+
+### Visual language
+
+The page is treated as a **strip-chart recorder** rather than a dashboard, because that is what it is: it plays a
+recorded run back at 20×, draws three signal traces against a scripted timeline, and marks a fault window. Four rules
+follow from that and are worth stating, since each one is the opposite of the web-dashboard default:
+
+- **The plot field is recessed** — darker than the panels around it, the way a screen is inset into a chassis.
+  Dashboards make charts *lighter* than the page. Getting this the right way round is most of why the page reads as an
+  instrument, and it also stops three saturated traces from having to fight a bright ground.
+- **Hairlines only.** No shadow, no gradient, no glow. Depth is three flat planes — chassis, panel, well — and one rule
+  colour.
+- **Every numeral is monospaced.** A figure that changes width as it counts is the one thing an instrument may not do.
+  The corollary is that a value which is *not* a number (`still draining`) is deliberately not set as one.
+- **The outage is hatched, not tinted.** This is load-bearing on the share chart, not decoration: the areas stack over
+  the band, and a flat wash under three translucent fills just shifts every consumer colour inside the window — the
+  reader sees three slightly-wrong colours rather than a marked region. Hatching also carries the right meaning, which
+  is "no reading was taken here", not "a different value was read here".
+
+Consumer colours are CSS custom properties rather than hex in `theme.ts`, because the page has a light theme too and a
+trace tuned for a near-black field is washed out on a near-white one. Each consumer card carries its channel colour as
+a left rail, which is what binds a card to its line in the two charts below without a legend lookup.
 
 ## Tech Stack
 

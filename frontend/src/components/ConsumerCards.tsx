@@ -1,16 +1,27 @@
 /**
- * One card per consumer: what it represents, where its backlog is now, and what
- * its policies saved.
+ * One card per consumer: what it represents, how it fared, and what its
+ * policies saved.
+ *
+ * Deliberately *not* a status dump. Backlog and peak backlog were both here and
+ * are both gone, because the chart directly below draws them per consumer over
+ * time -- a live number that duplicates a line on the next panel costs a glance
+ * and adds nothing. What is left is the two things no chart shows, which are
+ * also exactly the two claims: how long this consumer took to catch up, and how
+ * much of its backlog its own policies made unnecessary to send.
  *
  * `caught_up_after_s` is the headline of the fairness claim and the route
- * returns null for it unconditionally, so it is derived here from the metrics
- * buffer. The card says which of the two it is showing rather than quietly
- * presenting a client-side estimate as a server-side fact.
+ * returns null for it unconditionally, so in practice it is always derived here
+ * from the metrics buffer -- the first bucket after the outage in which this
+ * consumer's backlog reads zero. The server value is still preferred if it ever
+ * starts arriving; the card no longer labels which of the two it got, because a
+ * "derived" badge that is on every card in every run marks nothing.
  */
+import type { CSSProperties } from 'react'
+
 import type { ConsumerRead, MetricsBucket } from '../api/types'
 import { roleFor } from '../scenario'
 import { colorFor } from '../theme'
-import { deriveCaughtUpAfter, peakBacklog, type ConsumerRef } from '../transform/series'
+import { deriveCaughtUpAfter, type ConsumerRef } from '../transform/series'
 
 interface Props {
   consumers: ConsumerRead[]
@@ -28,10 +39,18 @@ export function ConsumerCards({ consumers, refs, buckets }: Props) {
           const derived = deriveCaughtUpAfter(buckets, consumer.id)
           const caughtUp = consumer.caught_up_after_s ?? derived
           const dropped = consumer.expired + consumer.superseded
+          // The left rail carries this consumer's trace colour. It does the job
+          // the old swatch did, but structurally rather than as an ornament
+          // beside the name: the card *is* the channel, so the channel colour
+          // is the edge of the card, and binding a card to its line in the
+          // charts below costs no legend lookup.
           return (
-            <article className="card" key={consumer.id}>
+            <article
+              className="card"
+              key={consumer.id}
+              style={{ '--card-channel': colorFor(refs, consumer.id) } as CSSProperties}
+            >
               <h3>
-                <span className="swatch" style={{ background: colorFor(refs, consumer.id) }} />
                 {consumer.name}
                 {role && <span className="chip muted">{role.label}</span>}
               </h3>
@@ -45,33 +64,25 @@ export function ConsumerCards({ consumers, refs, buckets }: Props) {
               {role && <p className="role">{role.blurb}</p>}
 
               <dl>
-                <dt>backlog</dt>
-                <dd className="big">{consumer.backlog.toLocaleString()}</dd>
-
-                <dt>in flight</dt>
-                <dd>
-                  {consumer.in_flight} <span className="muted">/ {consumer.concurrency_cap} cap</span>
-                </dd>
-
-                <dt>delivered</dt>
-                <dd>{consumer.delivered.toLocaleString()}</dd>
-
-                <dt>peak backlog</dt>
-                <dd>{peakBacklog(buckets, consumer.id).toLocaleString()}</dd>
-
                 <dt>caught up</dt>
-                <dd>
+                <dd className="big">
                   {caughtUp === null ? (
-                    <span className="muted">still draining</span>
+                    <span className="pending">still draining</span>
                   ) : (
                     <>
-                      {Math.round(caughtUp)}s after outage
-                      {consumer.caught_up_after_s === null && (
-                        <span className="chip muted">derived</span>
-                      )}
+                      {Math.round(caughtUp)}s
+                      <span className="muted unit">after outage</span>
                     </>
                   )}
                 </dd>
+
+                {/*
+                  Kept only as the scale for the line below it: "1,593 never
+                  sent" is either alarming or routine depending on what it is a
+                  fraction of, and the fraction is the second claim.
+                */}
+                <dt>delivered</dt>
+                <dd>{consumer.delivered.toLocaleString()}</dd>
               </dl>
 
               {/*
@@ -82,9 +93,9 @@ export function ConsumerCards({ consumers, refs, buckets }: Props) {
               */}
               <div className="policy-row">
                 <span className={dropped > 0 ? '' : 'muted'}>
-                  {dropped.toLocaleString()} never sent
+                  {dropped.toLocaleString()} excluded by policies
                 </span>
-                <span className="muted">
+                <span className="breakdown">
                   {consumer.expired.toLocaleString()} stale · {consumer.superseded.toLocaleString()}{' '}
                   superseded
                   {consumer.failed > 0 && ` · ${consumer.failed.toLocaleString()} failed`}

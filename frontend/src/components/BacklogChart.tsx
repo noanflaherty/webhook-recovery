@@ -21,8 +21,12 @@ import {
 
 import type { MetricsBucket } from '../api/types'
 import { OUTAGE_ENDS_AT_S, OUTAGE_STARTS_AT_S, formatVirtual } from '../scenario'
+import { LEGEND_STYLE, TOOLTIP_STYLE, faultHatch } from '../chartStyle'
 import { colorByName } from '../theme'
 import { toWideSeries, type ConsumerRef } from '../transform/series'
+
+const FAULT_HATCH_ID = 'fault-hatch-backlog'
+const FAULT_HATCH = faultHatch(FAULT_HATCH_ID)
 
 interface Props {
   buckets: MetricsBucket[]
@@ -50,7 +54,9 @@ export const BacklogChart = memo(function BacklogChart({ buckets, consumers }: P
     return (
       <section className="panel">
         <h2>Backlog</h2>
-        <div className="chart-empty">Waiting for the conductor&rsquo;s first metrics bucket…</div>
+        <div className="well">
+          <div className="chart-empty">Waiting for the conductor&rsquo;s first metrics bucket…</div>
+        </div>
       </section>
     )
   }
@@ -59,59 +65,68 @@ export const BacklogChart = memo(function BacklogChart({ buckets, consumers }: P
     <section className="panel">
       <h2>Backlog</h2>
       <p className="caption">
-        Undelivered work per consumer. The band is the provider outage — nothing is attempted
-        inside it, so every line climbs; what matters is the order they come down.
+        Undelivered work per consumer. The hatched span is the provider outage — nothing is
+        attempted inside it, so every line climbs; what matters is the order they come down.
       </p>
-      <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-          <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />
-          {bandEnd > OUTAGE_STARTS_AT_S && (
-            <ReferenceArea
-              x1={OUTAGE_STARTS_AT_S}
-              x2={bandEnd}
-              fill="var(--err)"
-              fillOpacity={0.07}
-              label={{
-                value: 'provider down',
-                position: 'insideTop',
-                fill: 'var(--muted)',
-                fontSize: 11,
-              }}
+      <div className="well">
+        <ResponsiveContainer width="100%" height={252}>
+          <LineChart data={data} margin={{ top: 10, right: 14, bottom: 2, left: 0 }}>
+            <defs>{FAULT_HATCH}</defs>
+            <CartesianGrid stroke="var(--rule)" strokeDasharray="1 5" vertical={false} />
+            {bandEnd > OUTAGE_STARTS_AT_S && (
+              <ReferenceArea
+                x1={OUTAGE_STARTS_AT_S}
+                x2={bandEnd}
+                fill={`url(#${FAULT_HATCH_ID})`}
+                fillOpacity={1}
+                label={{
+                  value: 'PROVIDER DOWN',
+                  position: 'insideTop',
+                  fill: 'var(--alarm)',
+                  fillOpacity: 0.75,
+                  fontSize: 8.5,
+                  letterSpacing: '0.14em',
+                }}
+              />
+            )}
+            <XAxis
+              dataKey="t"
+              type="number"
+              domain={['dataMin', 'dataMax']}
+              tickFormatter={formatVirtual}
+              stroke="var(--rule)"
+              tick={{ fill: 'var(--faint)', fontSize: 9 }}
+              tickLine={{ stroke: 'var(--rule)' }}
+              minTickGap={44}
             />
-          )}
-          <XAxis
-            dataKey="t"
-            type="number"
-            domain={['dataMin', 'dataMax']}
-            tickFormatter={formatVirtual}
-            stroke="var(--muted)"
-            fontSize={11}
-          />
-          <YAxis stroke="var(--muted)" fontSize={11} width={48} allowDecimals={false} />
-          <Tooltip
-            labelFormatter={(label) => `t = ${formatVirtual(Number(label))}`}
-            contentStyle={{
-              background: 'var(--bg)',
-              border: '1px solid var(--line)',
-              borderRadius: 6,
-              fontSize: 12,
-            }}
-          />
-          <Legend iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
-          {consumers.map((consumer) => (
-            <Line
-              key={consumer.id}
-              type="monotone"
-              dataKey={consumer.name}
-              stroke={colorByName(consumers, consumer.name)}
-              strokeWidth={1.75}
-              dot={false}
-              isAnimationActive={false}
-              connectNulls={false}
+            <YAxis
+              stroke="var(--rule)"
+              tick={{ fill: 'var(--faint)', fontSize: 9 }}
+              tickLine={{ stroke: 'var(--rule)' }}
+              width={46}
+              allowDecimals={false}
             />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
+            <Tooltip
+              labelFormatter={(label) => `t = ${formatVirtual(Number(label))}`}
+              cursor={{ stroke: 'var(--dim)', strokeDasharray: '2 3' }}
+              contentStyle={TOOLTIP_STYLE}
+            />
+            <Legend iconType="plainline" wrapperStyle={LEGEND_STYLE} />
+            {consumers.map((consumer) => (
+              <Line
+                key={consumer.id}
+                type="monotone"
+                dataKey={consumer.name}
+                stroke={colorByName(consumers, consumer.name)}
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+                connectNulls={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </section>
   )
 })

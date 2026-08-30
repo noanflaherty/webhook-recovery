@@ -11,7 +11,7 @@
  * fair one each keep their own URL, so the two can be compared side by side
  * rather than only through the toggle.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import './App.css'
 import { LiveSource, createRun, retireRun } from './api/client'
@@ -20,15 +20,27 @@ import type { DataSource } from './api/source'
 import { BacklogChart } from './components/BacklogChart'
 import { ConsumerCards } from './components/ConsumerCards'
 import { ControlBar } from './components/ControlBar'
-import { DecisionFeed } from './components/DecisionFeed'
 import { EmptyState } from './components/EmptyState'
-import { ProcessStrip } from './components/ProcessStrip'
+import { RunList } from './components/RunList'
 import { ShareChart } from './components/ShareChart'
 import { useRun } from './hooks/useRun'
+import { listRuns, rememberRun } from './runs'
 
 const STORAGE_KEY = 'webhook-recovery:sim'
 
-type Target = { kind: 'live'; simId: string } | { kind: 'replay' } | null
+/**
+ * What the page is pointed at.
+ *
+ * `runs` is a view rather than a data source -- it reads localStorage and a
+ * handful of one-shot fetches, and has no simulation of its own -- but it lives
+ * in `Target` anyway so that it is addressable, back/forward works across it,
+ * and there is still exactly one function that decides what the page shows.
+ */
+type Target =
+  | { kind: 'live'; simId: string }
+  | { kind: 'replay' }
+  | { kind: 'runs' }
+  | null
 
 function remembered(): string | null {
   // Private-mode browsers throw on access rather than returning null.
@@ -50,6 +62,7 @@ function remember(simId: string | null): void {
 
 function readTarget(): Target {
   const params = new URLSearchParams(window.location.search)
+  if (params.get('view') === 'runs') return { kind: 'runs' }
   if (params.get('source') === 'replay') return { kind: 'replay' }
   const fromUrl = params.get('sim')
   if (fromUrl) return { kind: 'live', simId: fromUrl }
@@ -61,8 +74,10 @@ function writeUrl(target: Target): void {
   const url = new URL(window.location.href)
   url.searchParams.delete('sim')
   url.searchParams.delete('source')
+  url.searchParams.delete('view')
   if (target?.kind === 'live') url.searchParams.set('sim', target.simId)
   if (target?.kind === 'replay') url.searchParams.set('source', 'replay')
+  if (target?.kind === 'runs') url.searchParams.set('view', 'runs')
   window.history.replaceState(null, '', url)
 }
 
@@ -74,9 +89,13 @@ export default function App() {
   const [generation, setGeneration] = useState(0)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  // Held in state rather than read at render: this component re-renders at the
+  // clock's 10Hz, and parsing the history out of localStorage that often to
+  // print one number would be silly. Every path that changes it says so.
+  const [runCount, setRunCount] = useState(() => listRuns().length)
 
   const source = useMemo<DataSource | null>(() => {
-    if (!target) return null
+    if (!target || target.kind === 'runs') return null
     return target.kind === 'replay' ? new ReplaySource() : new LiveSource(target.simId)
     // `generation` is a deliberate cache-buster rather than an input.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,10 +105,32 @@ export default function App() {
 
   const go = useCallback((next: Target) => {
     writeUrl(next)
-    remember(next?.kind === 'live' ? next.simId : null)
     setTarget(next)
     setActionError(null)
   }, [])
+
+  /**
+   * Mirror the target into localStorage: the resume slot, and the history.
+   *
+   * Keyed off the target rather than done inside `go`, because the first target
+   * of a session does not come from `go` -- it is read out of the URL by
+   * `useState(readTarget)`. Doing it in `go` alone meant that opening a run by
+   * its link, which is the single most likely way to arrive here, was the one
+   * path that neither joined the history nor became the run a refresh resumes.
+   *
+   * The runs view is excluded rather than treated as "no run": it is a page you
+   * pass through, and clearing the resume slot on the way in would mean the
+   * list could not say which run you came from, and `back` would have nowhere
+   * to go.
+   */
+  useEffect(() => {
+    if (target?.kind === 'live') {
+      remember(target.simId)
+      setRunCount(rememberRun(target.simId).length)
+    } else if (target?.kind !== 'runs') {
+      remember(null)
+    }
+  }, [target])
 
   const start = useCallback(async () => {
     setBusy(true)
@@ -122,12 +163,12 @@ export default function App() {
           /* already gone, or never existed -- either way, on to the new one */
         }
       }
-      // Reset starts on the *naive* arm rather than inheriting the toggle or
-      // the server's default. A fresh run is the "before" picture: you want to
-      // watch FIFO starve the small consumer and then turn fairness on, which
-      // means the interesting flip is on -> visible, not off -> nothing. It
-      // also makes Reset mean one thing rather than "whatever it was last".
-      const created = await createRun({ fair_drain_enabled: false })
+      // No arm passed, here or on any other start path: fair drain is the
+      // server's default and the system's actual behaviour, so a fresh run
+      // shows what the thing does. The comparison is made by flipping *to*
+      // FIFO, which is also the honest direction -- the naive arm is the
+      // hypothetical, not the baseline this ships in.
+      const created = await createRun()
       go({ kind: 'live', simId: created.id })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err))
@@ -137,6 +178,36 @@ export default function App() {
   }, [go, source, target])
 
   const replay = useCallback(() => go({ kind: 'replay' }), [go])
+  const viewRuns = useCallback(() => go({ kind: 'runs' }), [go])
+
+  // Leaving the list goes back to the run you came from if there still is one,
+  // and to the cold-landing screen otherwise -- never to a dead end.
+  const leaveRuns = useCallback(() => {
+    const last = remembered()
+    go(last ? { kind: 'live', simId: last } : null)
+  }, [go])
+
+  if (target?.kind === 'runs') {
+    return (
+      <main className="app">
+        <div className="titlebar">
+          <h1>webhook-recovery</h1>
+          <button type="button" className="link" onClick={leaveRuns}>
+            back
+          </button>
+        </div>
+        {actionError && <p className="error">{actionError}</p>}
+        <RunList
+          currentSimId={remembered()}
+          busy={busy}
+          onOpen={(simId) => go({ kind: 'live', simId })}
+          onStart={() => void start()}
+          onReplay={replay}
+          onHistoryChange={() => setRunCount(listRuns().length)}
+        />
+      </main>
+    )
+  }
 
   // No run selected, or one that could not be loaded -- a remembered id whose
   // simulation is gone lands here too, with the reason shown.
@@ -146,6 +217,8 @@ export default function App() {
         <EmptyState
           onStart={() => void start()}
           onReplay={replay}
+          onViewRuns={runCount > 0 ? viewRuns : null}
+          runCount={runCount}
           busy={busy}
           error={actionError ?? (source ? run.error : null)}
         />
@@ -177,6 +250,11 @@ export default function App() {
             view the recorded run
           </button>
         )}
+        {runCount > 0 && (
+          <button type="button" className="link" onClick={viewRuns}>
+            your runs ({runCount})
+          </button>
+        )}
       </div>
 
       <ControlBar
@@ -192,10 +270,10 @@ export default function App() {
 
       {/*
         The cast comes first. The two charts are unreadable until you know who
-        the three lines are and what each one is there to demonstrate -- that
+        the three traces are and what each one is there to demonstrate -- that
         Acme's slow drain is the control rather than a defect, and that Clover's
-        small backlog is the entire fairness case. Introduce the cast, then show
-        what happens to it.
+        small backlog is the entire fairness case. Introduce the channels, then
+        show what happens to them.
       */}
       <ConsumerCards consumers={run.consumers} refs={run.consumerRefs} buckets={run.buckets} />
       <BacklogChart buckets={run.buckets} consumers={run.consumerRefs} />
@@ -204,8 +282,6 @@ export default function App() {
         consumers={run.consumerRefs}
         fairDrainFlips={run.fairDrainFlips}
       />
-      <DecisionFeed decisions={run.decisions} sourceKind={source.kind} />
-      <ProcessStrip processes={run.processes} sourceKind={source.kind} />
     </main>
   )
 }

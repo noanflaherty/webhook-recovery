@@ -111,7 +111,8 @@ disappears; it's a decision the consumer made, written down where they can see i
 **Three processes instead of one.** One process would have been faster to build and deterministic to
 test. Splitting into api, conductor and worker cost me hours and bought the shape the argument actually
 needs: leader election is real, the workers are genuinely stateless, and "the conductor is a singleton"
-is something you can watch in the process strip rather than something I assert in a document.
+is something `GET /api/process` will show you, and `scripts/verify.sh` asserts, rather than something I
+claim in a document.
 
 ## What I left out, and why
 

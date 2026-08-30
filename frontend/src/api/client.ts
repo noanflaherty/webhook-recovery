@@ -123,6 +123,17 @@ export function retireRun(simulationId: string): Promise<SimulationRead> {
   })
 }
 
+/**
+ * Read one run's simulation row, without standing up a `LiveSource` for it.
+ *
+ * The run list needs the current state of N runs once, not a polling source per
+ * run -- and several of those ids may name runs the server no longer has, which
+ * is a 404 the caller renders rather than an error the source should carry.
+ */
+export function fetchRun(simulationId: string): Promise<SimulationRead> {
+  return request<SimulationRead>(`/api/simulation/${simulationId}`)
+}
+
 export function getHealth(): Promise<{ status: string; db: string }> {
   return request<{ status: string; db: string }>('/api/health')
 }
