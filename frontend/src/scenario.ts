@@ -26,6 +26,15 @@ export const OUTAGE_ENDS_AT_S = 420
 /** `fairness_window_virtual_s` -- the window the scheduler itself averages over. */
 export const FAIRNESS_WINDOW_S = 5
 
+/**
+ * Bolt's `balance.available` staleness bound, from `app.core.scenario.CONSUMERS`.
+ *
+ * Mirrored as a constant rather than written into the card copy, because it is a
+ * scenario-tuning knob that has already moved once -- and a number baked into a
+ * sentence is a number nobody thinks to update.
+ */
+export const BOLT_STALENESS_S = 60
+
 /** `app.core.scenario.phase_at`. */
 export function phaseAt(
   virtualS: number,
@@ -92,7 +101,7 @@ export const CONSUMER_ROLES: Record<string, ConsumerRole> = {
   'Bolt Billing': {
     label: 'policy',
     blurb:
-      'The same subscriptions as Acme, but it coalesces subscription churn and drops balances older than 120s — so its backlog shrinks before it is ever sent, while every payment still lands.',
+      `The same subscriptions as Acme, but it coalesces subscription churn and drops balances older than ${BOLT_STALENESS_S}s — so its backlog shrinks before it is ever sent, while every payment still lands.`,
   },
   'Clover CRM': {
     label: 'fairness',
