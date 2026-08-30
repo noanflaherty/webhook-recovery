@@ -4,10 +4,10 @@ The API process holds no simulation state at all -- it is a thin layer over
 Postgres. Every virtual timestamp it returns is computed from the ``simulation``
 row it just read, exactly as a worker would compute it.
 
-Phase 0 implements the **simulation lifecycle only**, because that is what the
-clock needs to be testable and the clock is the most expensive thing here to get
-wrong late. ``/metrics`` and ``/decisions`` are real reads that legitimately
-return empty -- more honest than serving stubs, and equally cheap.
+It owns the two things that must not depend on scheduling: the **simulation
+lifecycle**, and **ingest**. Keeping ingest here is what gives conductor failure
+its correct shape -- acceptance never depends on a conductor holding the lock, so
+a leaderless minute costs throughput and never data.
 """
 
 from __future__ import annotations
@@ -19,10 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.ingest import EventSpec, ingest_events
 from app.api.schemas import (
     ConsumerRead,
     DecisionRead,
     DecisionsPage,
+    EventCreate,
+    EventRead,
     HealthRead,
     MetricsBucket,
     MetricsPage,
@@ -49,7 +52,7 @@ from app.core.enums import (
     SimStatus,
 )
 from app.core.models import Consumer, Delivery, Event, MetricsSnapshot, Process, Simulation
-from app.core.scenario import phase_at
+from app.core.scenario import phase_at, seed_simulation
 from app.core.settings import get_settings
 
 router = APIRouter(prefix="/api")
@@ -111,7 +114,16 @@ async def create_simulation(
     body: SimulationCreate | None = None,
     session: AsyncSession = Depends(db.get_session),
 ) -> SimulationRead:
-    """Create a bare simulation. Consumer seeding is Phase 3."""
+    """Create a simulation and seed its cast, in one transaction.
+
+    Seeding belongs here rather than in a later phase because fan-out reads
+    ``subscription``: a simulation with no consumers accepts events and delivers
+    them to nobody, which is a walking skeleton that cannot walk.
+
+    Creating a simulation *is* Reset. Everything is namespaced by
+    ``simulation_id``, so runs persist side by side and a reviewer can leave one
+    up while starting another.
+    """
     settings = get_settings()
     body = body or SimulationCreate()
     config = start_config(body.speed_multiplier or settings.default_speed_multiplier)
@@ -131,6 +143,7 @@ async def create_simulation(
     )
     session.add(sim)
     await session.flush()
+    await seed_simulation(session, sim.id)
     return _to_read(sim)
 
 
@@ -188,6 +201,46 @@ async def patch_simulation(
 
 
 # ---------------------------------------------------------------------------
+# Ingest
+# ---------------------------------------------------------------------------
+
+
+@router.post("/simulation/{simulation_id}/event", response_model=EventRead, status_code=201)
+async def create_event(
+    simulation_id: uuid.UUID,
+    body: EventCreate,
+    session: AsyncSession = Depends(db.get_session),
+) -> EventRead:
+    """Ledger one event and fan it out to every subscribed consumer.
+
+    In production the callers here are the provider's own internal services. In
+    the demo a background task in this same process plays them -- through
+    ``ingest_events`` directly rather than back through this route, which is the
+    same code path without a loopback socket. This route is the real interface,
+    and that is the part of the claim that matters.
+    """
+    sim = await _load_simulation(session, simulation_id)
+    events = await ingest_events(
+        session,
+        sim,
+        [EventSpec(event_type=body.event_type, entity_key=body.entity_key, payload=body.payload)],
+    )
+    event = events[0]
+
+    fanned_out = await session.scalar(
+        select(func.count()).select_from(Delivery).where(Delivery.event_id == event.id)
+    )
+    return EventRead(
+        id=event.id,
+        simulation_id=simulation_id,
+        event_type=event.event_type,
+        entity_key=event.entity_key,
+        occurred_at=event.occurred_at,
+        delivery_count=fanned_out or 0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Consumers
 # ---------------------------------------------------------------------------
 
@@ -197,11 +250,7 @@ async def list_consumers(
     simulation_id: uuid.UUID,
     session: AsyncSession = Depends(db.get_session),
 ) -> list[ConsumerRead]:
-    """Consumers with their live counters.
-
-    Empty until Phase 3 seeds them -- a real read that legitimately returns
-    nothing, rather than a stub that has to be deleted later.
-    """
+    """Consumers with their live counters, seeded at simulation creation."""
     await _load_simulation(session, simulation_id)
 
     consumers = (

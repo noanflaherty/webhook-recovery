@@ -61,10 +61,13 @@ export default defineRailway(() => {
     env: { PORT: "8000", ...COMMON },
   });
 
-  // Two: one leads, one stands by on the advisory lock. This matches the live
-  // service (scaled outside this file) and what Phase 1's leader election
-  // needs. Declaring it here keeps `config apply` from silently scaling it
-  // back down as a side effect of an unrelated change.
+  // Two conductors: one leads, one stands by on the advisory lock. That is what
+  // leader election needs -- a singleton with a standby behind it is a different
+  // statement from a singleton with nothing behind it -- and it is also the free
+  // tier's ceiling of 2 replicas per service.
+  //
+  // Declared here rather than left to the dashboard so `config apply` cannot
+  // silently scale it back down as a side effect of an unrelated change.
   const conductor = service("conductor", {
     start: "python -m app.conductor",
     replicas: 2,

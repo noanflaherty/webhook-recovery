@@ -28,7 +28,7 @@
     "/api/simulation": {
       "post": {
         "summary": "Create Simulation",
-        "description": "Create a bare simulation. Consumer seeding is Phase 3.",
+        "description": "Create a simulation and seed its cast, in one transaction.\n\nSeeding belongs here rather than in a later phase because fan-out reads\n``subscription``: a simulation with no consumers accepts events and delivers\nthem to nobody, which is a walking skeleton that cannot walk.\n\nCreating a simulation *is* Reset. Everything is namespaced by\n``simulation_id``, so runs persist side by side and a reviewer can leave one\nup while starting another.",
         "operationId": "create_simulation_api_simulation_post",
         "requestBody": {
           "content": {
@@ -160,10 +160,61 @@
         }
       }
     },
+    "/api/simulation/{simulation_id}/event": {
+      "post": {
+        "summary": "Create Event",
+        "description": "Ledger one event and fan it out to every subscribed consumer.\n\nIn production the callers here are the provider's own internal services. In\nthe demo a background task in this same process plays them -- through\n``ingest_events`` directly rather than back through this route, which is the\nsame code path without a loopback socket. This route is the real interface,\nand that is the part of the claim that matters.",
+        "operationId": "create_event_api_simulation__simulation_id__event_post",
+        "parameters": [
+          {
+            "name": "simulation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/simulation/{simulation_id}/consumer": {
       "get": {
         "summary": "List Consumers",
-        "description": "Consumers with their live counters.\n\nEmpty until Phase 3 seeds them -- a real read that legitimately returns\nnothing, rather than a stub that has to be deleted later.",
+        "description": "Consumers with their live counters, seeded at simulation creation.",
         "operationId": "list_consumers_api_simulation__simulation_id__consumer_get",
         "parameters": [
           {
@@ -513,6 +564,72 @@
         ],
         "title": "DeliveryState",
         "description": "The delivery lifecycle (TECHNICAL_DESIGN.md \u00a7Delivery Lifecycle).\n\n``expired`` and ``superseded`` are decided by the conductor and never reach\na worker."
+      },
+      "EventCreate": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Event Type"
+          },
+          "entity_key": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Entity Key"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_type",
+          "entity_key"
+        ],
+        "title": "EventCreate",
+        "description": "One event from the provider.\n\n``occurred_at`` is deliberately not a field: it is server-assigned from the\nsimulation's virtual clock. Letting a caller set it would let them backdate\nan event past a staleness bound, and staleness is a policy the *consumer*\nowns."
+      },
+      "EventRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "simulation_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Simulation Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "entity_key": {
+            "type": "string",
+            "title": "Entity Key"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "delivery_count": {
+            "type": "integer",
+            "title": "Delivery Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "simulation_id",
+          "event_type",
+          "entity_key",
+          "occurred_at",
+          "delivery_count"
+        ],
+        "title": "EventRead"
       },
       "HTTPValidationError": {
         "properties": {

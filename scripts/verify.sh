@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check a running stack against the Phase 0 exit criteria.
+# Check a running stack against the Phase 0 and Phase 1 exit criteria.
 #
 #   ./scripts/verify.sh [base-url]
 #
@@ -10,7 +10,7 @@
 set -uo pipefail
 
 BASE="${1:-http://localhost:8000}"
-EXPECTED_PROCESSES="${EXPECTED_PROCESSES:-4}"
+EXPECTED_PROCESSES="${EXPECTED_PROCESSES:-5}"
 failures=0
 
 pass() { printf '   \033[32mOK\033[0m  %s\n' "$1"; }
@@ -39,10 +39,20 @@ for p in rows:
 '
 N=$(printf '%s' "$PROCS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')
 if [ "$N" -eq "$EXPECTED_PROCESSES" ]; then
-  pass "$N live (1 conductor + $((EXPECTED_PROCESSES - 1)) workers)"
+  pass "$N live (2 conductors + $((EXPECTED_PROCESSES - 2)) workers)"
 else
   fail "expected $EXPECTED_PROCESSES live processes, got $N"
 fi
+
+# Exactly one, not at-least-one. Two leaders means two conductors are both
+# running the admission read-modify-write, which is silently wrong rather than
+# loudly broken -- so it is asserted rather than eyeballed.
+LEADERS=$(printf '%s' "$PROCS" | python3 -c '
+import sys, json
+print(sum(1 for p in json.load(sys.stdin) if p["is_leader"]))
+')
+[ "$LEADERS" -eq 1 ] && pass "exactly one leader" \
+                     || fail "expected exactly 1 leader, got $LEADERS"
 
 STALE=$(printf '%s' "$PROCS" | python3 -c '
 import sys, json
@@ -86,6 +96,69 @@ fi
 echo
 echo "== clock"
 if python3 ./scripts/check_clock.py "$BASE"; then :; else failures=$((failures + $?)); fi
+
+# --------------------------------------------------------------------------
+echo
+echo "== delivery pipeline"
+# A fresh simulation, given a few real seconds to walk the whole path:
+# producer -> ledger -> fan-out -> admission -> worker -> delivered.
+SIM=$(curl -sf -X POST "$BASE/api/simulation" \
+        -H 'content-type: application/json' -d '{}' | field id) || SIM=""
+if [ -z "$SIM" ]; then
+  fail "POST /api/simulation did not return an id"
+else
+  echo "   simulation $SIM"
+  CONSUMERS=$(curl -sf "$BASE/api/simulation/$SIM/consumer" \
+    | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')
+  [ "$CONSUMERS" = "3" ] && pass "3 consumers seeded at creation" \
+                         || fail "expected 3 seeded consumers, got $CONSUMERS"
+
+  echo "   (waiting ${PIPELINE_WAIT_S:-12}s for the pipeline to move)"
+  sleep "${PIPELINE_WAIT_S:-12}"
+
+  CARDS=$(curl -sf "$BASE/api/simulation/$SIM/consumer")
+  printf '%s' "$CARDS" | python3 -c '
+import sys, json
+for c in json.load(sys.stdin):
+    print("   %-17s backlog %-6d delivered %-6d in_flight %d"
+          % (c["name"], c["backlog"], c["delivered"], c["in_flight"]))
+'
+  DELIVERED=$(printf '%s' "$CARDS" | python3 -c '
+import sys, json; print(sum(c["delivered"] for c in json.load(sys.stdin)))
+')
+  [ "$DELIVERED" -gt 0 ] && pass "$DELIVERED deliveries reached 'delivered'" \
+                         || fail "nothing was delivered -- the skeleton is not walking"
+
+  # The feed filters on completed_at IS NOT NULL, so a worker that set the
+  # terminal state without the timestamp would deliver perfectly and show
+  # nothing here.
+  DECISIONS=$(curl -sf "$BASE/api/simulation/$SIM/decisions?limit=5" | python3 -c '
+import sys, json; print(len(json.load(sys.stdin)["decisions"]))
+')
+  [ "$DECISIONS" -gt 0 ] && pass "decision feed is populated" \
+                         || fail "deliveries completed but the decision feed is empty"
+
+  # The check that fails invisibly. A gap in the series is a hole in the chart a
+  # client cannot tell apart from a zero, and a conductor that sampled counters
+  # instead of deriving them would draw a perfectly smooth chart that is simply
+  # scaled down -- which on a 100% stacked chart looks exactly right.
+  curl -sf "$BASE/api/simulation/$SIM/metrics?since_bucket=-1" | python3 -c '
+import sys, json
+buckets = json.load(sys.stdin)["buckets"]
+if not buckets:
+    print("   no metrics buckets at all"); raise SystemExit(1)
+keys = sorted({b["bucket_virtual_s"] for b in buckets})
+gaps = [a for a, b in zip(keys, keys[1:]) if b - a != 1]
+consumers = {b["consumer_id"] for b in buckets}
+print("   %d buckets (%d..%d) x %d consumers, %d attempts"
+      % (len(keys), keys[0], keys[-1], len(consumers), sum(b["attempts"] for b in buckets)))
+if gaps:
+    print("   series has gaps after buckets: %s" % gaps[:5]); raise SystemExit(1)
+if len(buckets) != len(keys) * len(consumers):
+    print("   not every consumer has a row in every bucket"); raise SystemExit(1)
+' && pass "metric buckets are contiguous and complete" \
+  || fail "metric series is gappy or incomplete -- see above"
+fi
 
 # --------------------------------------------------------------------------
 echo

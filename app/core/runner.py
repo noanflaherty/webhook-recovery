@@ -33,6 +33,11 @@ log = logging.getLogger(__name__)
 #: worker stamps it on the leases it takes.
 LoopBody = Callable[[uuid.UUID], Awaitable[None]]
 
+#: Teardown, run once after the last iteration drains. The conductor releases
+#: its advisory lock here: the lock is held on a connection that lives *across*
+#: iterations, so there is no `finally` inside the loop body to release it from.
+Teardown = Callable[[], Awaitable[None]]
+
 #: How long a booting process waits for its schema to appear before giving up.
 #: Generous: the only thing it is waiting on is one `alembic upgrade head`, and
 #: failing early here costs a crash-loop for no benefit.
@@ -55,16 +60,23 @@ class ProcessRunner:
         *,
         interval_s: float,
         process_id: uuid.UUID | None = None,
+        on_shutdown: Teardown | None = None,
     ) -> None:
         self.kind = kind
         self.loop_body = loop_body
         self.interval_s = interval_s
         self.process_id = process_id or uuid.uuid4()
+        self.on_shutdown = on_shutdown
         self.stop = asyncio.Event()
         self._is_leader = False
 
     def mark_leader(self, value: bool) -> None:
-        """Set by the conductor once leader election lands (Phase 1)."""
+        """Called by the conductor each pass; read by the heartbeat.
+
+        Observability only. ``process.is_leader`` is what the UI's process strip
+        renders; it is never read back to decide anything, because leadership is
+        the advisory lock and nothing else.
+        """
         self._is_leader = value
 
     def request_stop(self, signum: int | None = None) -> None:
@@ -126,6 +138,14 @@ class ProcessRunner:
         finally:
             # The loop body has already returned, so nothing is in flight here.
             self.stop.set()
+            if self.on_shutdown is not None:
+                # Logged and swallowed: this runs on the way out, and a failure
+                # to release a lock the dying session is about to drop anyway
+                # must not mask whatever actually stopped the loop.
+                try:
+                    await self.on_shutdown()
+                except Exception:
+                    log.warning("%s shutdown hook failed", self.kind.value, exc_info=True)
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
@@ -158,21 +178,51 @@ class ProcessRunner:
             await asyncio.wait_for(self.stop.wait(), timeout=seconds)
 
 
-def run_process(kind: ProcessKind, loop_body: LoopBody, interval_s: float | None = None) -> None:
-    """Synchronous entrypoint for ``python -m app.worker`` and friends."""
+def configure_logging() -> None:
+    """One log format for every process type.
+
+    Factored out of :func:`run_process` so the conductor -- which builds its own
+    ``ProcessRunner`` in order to hold a reference to it for ``mark_leader`` --
+    does not have to duplicate it or lose its logs.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+
+
+def default_interval_s(kind: ProcessKind) -> float:
     settings = get_settings()
-    if interval_s is None:
-        interval_s = (
-            settings.conductor_loop_interval_s
-            if kind is ProcessKind.CONDUCTOR
-            else settings.worker_loop_interval_s
-        )
-    runner = ProcessRunner(kind, loop_body, interval_s=interval_s)
+    return (
+        settings.conductor_loop_interval_s
+        if kind is ProcessKind.CONDUCTOR
+        else settings.worker_loop_interval_s
+    )
+
+
+def run_process(
+    kind: ProcessKind,
+    loop_body: LoopBody,
+    interval_s: float | None = None,
+    *,
+    on_shutdown: Teardown | None = None,
+) -> None:
+    """Synchronous entrypoint for ``python -m app.worker`` and friends."""
+    configure_logging()
+    runner = ProcessRunner(
+        kind,
+        loop_body,
+        interval_s=interval_s if interval_s is not None else default_interval_s(kind),
+        on_shutdown=on_shutdown,
+    )
     asyncio.run(runner.run())
 
 
-__all__ = ["LoopBody", "ProcessRunner", "run_process"]
+__all__ = [
+    "LoopBody",
+    "ProcessRunner",
+    "Teardown",
+    "configure_logging",
+    "default_interval_s",
+    "run_process",
+]
