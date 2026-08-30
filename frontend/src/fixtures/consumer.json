@@ -1,0 +1,44 @@
+[
+  {
+    "id": 1,
+    "name": "Acme Analytics",
+    "weight": 1.0,
+    "concurrency_cap": 8,
+    "max_attempts_per_s": 20.0,
+    "backlog": 0,
+    "in_flight": 0,
+    "delivered": 3832,
+    "expired": 0,
+    "superseded": 0,
+    "failed": 3,
+    "caught_up_after_s": 173.0
+  },
+  {
+    "id": 2,
+    "name": "Bolt Billing",
+    "weight": 1.0,
+    "concurrency_cap": 8,
+    "max_attempts_per_s": 20.0,
+    "backlog": 0,
+    "in_flight": 0,
+    "delivered": 2571,
+    "expired": 737,
+    "superseded": 517,
+    "failed": 5,
+    "caught_up_after_s": 82.0
+  },
+  {
+    "id": 3,
+    "name": "Clover CRM",
+    "weight": 1.0,
+    "concurrency_cap": 8,
+    "max_attempts_per_s": 20.0,
+    "backlog": 0,
+    "in_flight": 0,
+    "delivered": 508,
+    "expired": 0,
+    "superseded": 0,
+    "failed": 2,
+    "caught_up_after_s": 27.0
+  }
+]

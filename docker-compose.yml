@@ -1,0 +1,87 @@
+# The whole system on one host: postgres, a one-shot migrate, then the three
+# process types off one image.
+#
+#   docker compose up --build --scale worker=3
+
+x-app: &app
+  build:
+    context: .
+  image: webhook-recovery:local
+  environment:
+    DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhook_recovery
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      # Migrations run exactly once, from a dedicated one-shot step. Three
+      # services racing `alembic upgrade head` on boot can deadlock.
+      condition: service_completed_successfully
+  restart: unless-stopped
+  # Long enough for the runner to finish its in-flight iteration and drain.
+  # An ungraceful kill is the one path that strands in_flight rows.
+  stop_grace_period: 20s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: webhook_recovery
+    ports:
+      # Host port is overridable: 5432 is very often already taken by another
+      # project's postgres. Nothing inside the compose network uses it.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d webhook_recovery"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  migrate:
+    build:
+      context: .
+    image: webhook-recovery:local
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhook_recovery
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    command:
+      ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  conductor:
+    <<: *app
+    command: ["python", "-m", "app.conductor"]
+    # One for now. Leader election lands in Phase 1; two idle conductors prove
+    # nothing.
+    scale: 1
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    scale: 3
+
+volumes:
+  pgdata:

@@ -1,0 +1,16 @@
+.git
+.claude
+.venv
+.idea
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+**/__pycache__
+frontend/node_modules
+frontend/dist
+*.md
+!README.md
+.env
+.env.*
+tests

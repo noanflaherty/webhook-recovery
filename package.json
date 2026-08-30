@@ -1,0 +1,8 @@
+{
+  "name": "webhook-recovery-infra",
+  "private": true,
+  "description": "Holds only the Railway IaC SDK, which `railway config` resolves from the repository root. The application's frontend has its own package.json under frontend/.",
+  "devDependencies": {
+    "railway": "^3.11.0"
+  }
+}
