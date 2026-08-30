@@ -12,8 +12,9 @@ Two properties fall out of that shape for free, and both are load-bearing:
 * **The drain guarantee still covers it.** The work stays inside a single
   ``loop_body`` call rather than escaping into background tasks, so the runner's
   "an iteration that has started is allowed to finish" applies unchanged, with
-  no task bookkeeping to write. Lease reaping is out of scope, which is exactly
-  why the graceful shutdown path has to strand nothing.
+  no task bookkeeping to write. The reaper would recover a batch stranded by a
+  shutdown, but only after a lease TTL of lost capacity -- draining costs
+  nothing and skips the wait.
 
 ``attempt`` rows are inserted at **claim** time, not completion, because the
 fairness window counts attempts *started*. Batching them into the claim
@@ -248,6 +249,7 @@ class Completion:
 
 async def complete_batch(
     session: AsyncSession,
+    worker_id: uuid.UUID,
     completions: list[Completion],
     now: datetime,
 ) -> None:
@@ -256,6 +258,16 @@ async def complete_batch(
     Terminal rows **must** stamp ``completed_at``: the decision feed filters on
     it being non-null, so a delivery that reaches ``delivered`` without one is
     delivered and invisible.
+
+    **Every write is fenced on the lease this worker still holds.** A worker
+    that is slow rather than dead -- sleeping in the transport against a
+    consumer that is down -- can have its lease expire and its rows reclaimed
+    while it is still running, and would otherwise arrive here and mark work
+    ``delivered`` that another worker is now legitimately holding, or resurrect
+    a row that has already been requeued. ``leased_by = :worker_id`` makes the
+    late completion a no-op instead: the reaper clears the lease it takes
+    (:func:`app.conductor.reaper.reclaim_expired_leases`), so the predicate
+    matches nothing and the batch quietly writes zero rows.
     """
     if not completions:
         return
@@ -268,7 +280,10 @@ async def complete_batch(
     # colliding with a column name in the SET clause.
     await conn.execute(
         update(Attempt)
-        .where(Attempt.id == bindparam("b_attempt_id"))
+        # `finished_at IS NULL` is the same fence in the attempt table: if the
+        # reaper already closed this row as `lease_expired`, that is the true
+        # story of the attempt and a late `ok` must not paper over it.
+        .where(Attempt.id == bindparam("b_attempt_id"), Attempt.finished_at.is_(None))
         .values(
             finished_at=now,
             outcome=bindparam("b_outcome"),
@@ -306,20 +321,21 @@ async def complete_batch(
                 }
             )
 
-    # The lease columns are deliberately left as they are. They are a record of
-    # the last worker to hold the row, and every reader that cares --
-    # ``GET /api/process``, and the reaper predicate if one is ever built -- gates on
-    # `state = 'in_flight'` anyway, so a stale lease on a settled row is inert.
+    # The lease columns are deliberately left on the settled row. They are a
+    # record of the last worker to hold it, and every reader that cares gates on
+    # `state = 'in_flight'` -- the reaper's sweep, ``GET /api/process``'s
+    # in-flight count -- so a stale lease on a settled row is inert.
+    held = (Delivery.state == DeliveryState.IN_FLIGHT.value, Delivery.leased_by == worker_id)
     if delivered:
         await conn.execute(
             update(Delivery)
-            .where(Delivery.id.in_(delivered))
+            .where(Delivery.id.in_(delivered), *held)
             .values(state=DeliveryState.DELIVERED.value, completed_at=now)
         )
     if failed:
         await conn.execute(
             update(Delivery)
-            .where(Delivery.id == bindparam("b_delivery_id"))
+            .where(Delivery.id == bindparam("b_delivery_id"), *held)
             .values(
                 state=DeliveryState.FAILED.value,
                 completed_at=now,
@@ -330,7 +346,7 @@ async def complete_batch(
     if retry:
         await conn.execute(
             update(Delivery)
-            .where(Delivery.id == bindparam("b_delivery_id"))
+            .where(Delivery.id == bindparam("b_delivery_id"), *held)
             .values(
                 state=DeliveryState.PENDING.value,
                 next_attempt_at=bindparam("b_next_attempt_at"),

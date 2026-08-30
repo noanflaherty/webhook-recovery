@@ -266,12 +266,14 @@ h2 {
   border-color: color-mix(in srgb, var(--alarm) 40%, transparent);
 }
 
+.chip.warn,
 .chip.phase-recovery,
 .chip.state-superseded {
   color: var(--signal);
   border-color: color-mix(in srgb, var(--signal) 40%, transparent);
 }
 
+.chip.ok,
 .chip.phase-normal,
 .chip.state-delivered {
   color: var(--ok);
@@ -767,6 +769,86 @@ h2 {
   font-family: var(--face-data);
   font-size: 0.625rem;
   margin: 0.7rem 0 0;
+}
+
+/* -- process strip --------------------------------------------------------- */
+
+/*
+  Read as a rack of small identical modules rather than as a table: the point
+  the panel makes is that these are several interchangeable processes, and
+  identical tiles in a row say that faster than aligned columns do.
+*/
+.procs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.proc {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.25rem 0.5rem;
+  background: var(--well);
+}
+
+.proc.leader {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+/*
+  A process that has missed several beats. Dimmed and dashed rather than
+  removed: the row *is* the evidence that something died, and it ages out of the
+  API's own window a few seconds later without any help from here.
+*/
+.proc.silent {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.proc-kind {
+  font-family: var(--face-data);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+/* Hostnames are container ids -- data, not prose, and they must not reflow. */
+.proc-host,
+.proc-flight,
+.proc-age {
+  font-family: var(--face-data);
+  font-size: 0.625rem;
+}
+
+.proc-flight {
+  color: var(--ink);
+}
+
+.proc-age {
+  color: var(--faint);
+}
+
+/*
+  Understated deliberately. It is the only destructive control on the page and
+  it sits in a panel nobody came to look at, so it reads as alarm-coloured text
+  rather than as a button competing with the transport.
+*/
+.proc button.danger {
+  font-family: var(--face-data);
+  font-size: 0.625rem;
+  color: var(--alarm);
+}
+
+.proc button.danger:hover:not(:disabled) {
+  color: var(--alarm);
 }
 
 /* -- empty state ----------------------------------------------------------- */

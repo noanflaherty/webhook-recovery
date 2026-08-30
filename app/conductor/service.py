@@ -25,6 +25,7 @@ from app.conductor.admission import compute_budget, mark_ready, select_candidate
 from app.conductor.leader import LeaderLock
 from app.conductor.metrics import MetricsWriter, read_gauges, total_backlog
 from app.conductor.policy import apply_drops, load_policies
+from app.conductor.reaper import reclaim_expired_leases
 from app.core.clock import SimulationClockConfig, VirtualClock
 from app.core.enums import SimStatus
 from app.core.models import Simulation
@@ -59,6 +60,14 @@ class Conductor:
 
     async def run_once(self, process_id: uuid.UUID) -> None:
         """One pass. Matches ``LoopBody``, so ``ProcessRunner`` drives it."""
+        # Before the pass, with the lock's session still open if this process is
+        # the leader. Dying here drops the lock the way a crash does -- Postgres
+        # notices the connection go, rather than reading a release -- which is
+        # the failover path a graceful stop can never exercise, because a
+        # graceful stop releases it.
+        if self._runner is not None and self._runner.crash.is_set():
+            self._runner.die()
+
         try:
             conn = await self._lock.acquire()
         except Exception:
@@ -126,6 +135,24 @@ class Conductor:
         clock = VirtualClock(SimulationClockConfig.from_row(sim))
         now = clock.now()
         elapsed = clock.elapsed_virtual_s()
+
+        # First, and ahead of both early returns below. Ahead of the gauges so
+        # the bucket this pass writes reports a reclaimed row as pending rather
+        # than in flight -- the gauge and the row then agree about the same
+        # instant. Ahead of the outage check because a lease goes on expiring
+        # while the pipeline is down, and a worker that died just before an
+        # outage must not hold its rows through it.
+        reclaimed = await reclaim_expired_leases(conn, sim.id, now)
+        if reclaimed.total:
+            log.warning(
+                "reclaimed %d expired leases for simulation %s at virtual %.1fs "
+                "(%d requeued, %d out of retries)",
+                reclaimed.total,
+                sim.id,
+                elapsed,
+                reclaimed.requeued,
+                reclaimed.exhausted,
+            )
 
         # One read, used twice: as the three gauges in the metric buckets, and
         # as the answer to "is there anything left to do?".

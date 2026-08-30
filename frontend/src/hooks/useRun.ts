@@ -11,6 +11,7 @@ import type { LiveSource } from '../api/client'
 import type {
   ConsumerRead,
   MetricsBucket,
+  ProcessRead,
   SimulationPatch,
   SimulationRead,
 } from '../api/types'
@@ -20,6 +21,12 @@ import { consumersFrom, mergeBuckets, type ConsumerRef } from '../transform/seri
 const SIMULATION_MS = 500
 const METRICS_MS = 1000
 const CONSUMERS_MS = 1000
+/**
+ * Slowest of the four. The registry only changes when a process starts, stops
+ * or takes a lease, and the one thing worth watching closely on it -- a killed
+ * worker's in-flight count -- is held for a whole lease TTL rather than a tick.
+ */
+const PROCESSES_MS = 3000
 /** How often the interpolated clock re-renders. Cosmetic, so 10Hz is plenty. */
 const CLOCK_MS = 100
 
@@ -65,6 +72,11 @@ interface Snapshot {
    * the toggle moved.
    */
   fairDrainFlips: FairDrainFlip[]
+  /**
+   * Live conductors and workers. Not per-simulation -- processes outlive any
+   * one run -- but polled alongside it because that is where it is displayed.
+   */
+  processes: ProcessRead[]
   error: string | null
   /** True until the first simulation response lands. */
   loading: boolean
@@ -75,6 +87,7 @@ const EMPTY: Snapshot = {
   consumers: [],
   buckets: [],
   fairDrainFlips: [],
+  processes: [],
   error: null,
   loading: true,
 }
@@ -208,6 +221,11 @@ export function useRun(source: LiveSource | null): RunState {
         const consumers = await source.getConsumers()
         if (!cancelled) setSnapshot((s) => ({ ...s, consumers }))
       }, CONSUMERS_MS),
+
+      start(async () => {
+        const processes = await source.getProcesses()
+        if (!cancelled) setSnapshot((s) => ({ ...s, processes }))
+      }, PROCESSES_MS),
     ]
 
     return () => {

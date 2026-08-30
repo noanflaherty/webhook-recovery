@@ -5,10 +5,13 @@ conductor are really separate processes rather than asserting it. Nothing in the
 delivery path consults it, and leader election never reads it --
 leadership is decided entirely by the Postgres advisory lock.
 
-Liveness is a **read-time filter, not a reaper**: ``GET /api/process`` returns
-rows whose ``last_heartbeat_wall`` is inside the window. Nothing reclaims a
-stale row to decide liveness, which keeps the design's claim -- "it is not
-required for correctness" -- literally true rather than approximately true.
+Liveness is a **read-time filter**: ``GET /api/process`` returns rows whose
+``last_heartbeat_wall`` is inside the window, and nothing reclaims a stale row
+in order to decide that. Which keeps the design's claim -- "it is not required
+for correctness" -- literally true rather than approximately true. Delivery
+leases are reclaimed, but by :mod:`app.conductor.reaper`, against a different
+table, and it deliberately never reads this one: reclamation asks whether a
+lease expired, never whether a worker is alive.
 
 Long-dead rows are deleted on registration, but only to bound the table: on a
 continuously running service every restart adds a row and every process rewrites
@@ -85,14 +88,22 @@ async def _prune_dead(session: AsyncSession, now: datetime) -> None:
     await session.execute(delete(Process).where(Process.last_heartbeat_wall < cutoff))
 
 
-async def heartbeat(process_id: uuid.UUID, *, is_leader: bool = False) -> None:
-    """Stamp one heartbeat."""
+async def heartbeat(process_id: uuid.UUID, *, is_leader: bool = False) -> bool:
+    """Stamp one heartbeat; return whether this process has been asked to die.
+
+    The read rides on the write's ``RETURNING``, so the kill flag costs no round
+    trip of its own. It is also the only direction this table is ever written
+    *to* a process rather than by one, and it stays outside the delivery path:
+    a process reads its own row and nothing else reads it back.
+    """
     async with session_scope() as session:
-        await session.execute(
+        crash = await session.scalar(
             update(Process)
             .where(Process.id == process_id)
             .values(last_heartbeat_wall=wall_now(), is_leader=is_leader)
+            .returning(Process.crash_requested)
         )
+    return bool(crash)
 
 
 async def heartbeat_loop(
@@ -100,6 +111,7 @@ async def heartbeat_loop(
     stop: asyncio.Event,
     *,
     is_leader: Callable[[], bool] | None = None,
+    on_crash_requested: Callable[[], None] | None = None,
 ) -> None:
     """Heartbeat until ``stop`` is set.
 
@@ -107,11 +119,17 @@ async def heartbeat_loop(
     live processes look dead. Failures are logged and swallowed -- a process
     that cannot heartbeat is still perfectly able to deliver webhooks, and
     taking it down over an observability write would be the tail wagging the dog.
+
+    ``on_crash_requested`` fires when the row says this process should die. It
+    only raises the flag: *when* to act on it belongs to the loop body, which is
+    the only thing that knows which moment makes the death worth simulating.
     """
     interval = get_settings().heartbeat_interval_s
     while not stop.is_set():
         try:
-            await heartbeat(process_id, is_leader=bool(is_leader and is_leader()))
+            crash = await heartbeat(process_id, is_leader=bool(is_leader and is_leader()))
+            if crash and on_crash_requested is not None:
+                on_crash_requested()
         except Exception:
             log.warning("heartbeat failed for %s", process_id, exc_info=True)
         try:

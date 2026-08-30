@@ -41,6 +41,18 @@ segment collapses from an equal third to a sliver and recovers. **Pause**, **spe
 other three knobs. Every run keeps its own `?sim=` URL and stays readable once it is done, so the
 scheduler comparison is two links rather than a thing you have to narrate; **your runs** lists them.
 
+**Kill a process.** The process strip at the foot of the page has a `kill` on every row, and it is a
+real ungraceful exit: no drain, no lock release, no deregistration. Kill a worker mid-recovery and it
+strands the batch it had just claimed — its row goes `no heartbeat` while its in-flight count holds —
+until the lease expires and the conductor requeues the lot. Kill the conductor marked `leader` and the
+standby takes the advisory lock, because Postgres notices the connection go. Both come straight back:
+the container restarts and re-registers under a fresh id, and the dead row fades out of the strip.
+
+*One thing to expect:* a lease is 30 **virtual** seconds, so at 20× the strand-and-recover window is
+about 1.5 real seconds — a dip, not a stall, and quicker than the 15-second liveness window that
+removes the dead process from the strip. To watch it slowly, drop the speed to 1× before killing, or
+raise `LEASE_DURATION_VIRTUAL_S`.
+
 A representative fair run, with policy on:
 
 ```
@@ -63,7 +75,12 @@ advance, which ones it did not want — and every payment still landed.
   pipeline recovers, and whether it has been superseded depends on what queued up behind it. Neither is
   knowable at ingest.
 
-**Deliberately absent:** lease reaping, per-consumer retry policy, and `batch_by_key` coalescing. See
+- **Recovery from worker death.** Workers lease the rows they claim; the conductor reclaims a lease once
+  it expires and requeues the delivery with the backoff a failed attempt would have earned. Reclamation
+  asks whether the *lease* expired, never whether the *worker* is alive, so the correctness path holds no
+  failure detector. The kill control in the process strip is how to watch it happen.
+
+**Deliberately absent:** per-consumer retry policy and `batch_by_key` coalescing. See
 [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) for what that costs.
 
 ## How it works
@@ -104,12 +121,17 @@ shallow, because its depth is the granularity of fairness.
 
 One conductor pass, per running simulation:
 
-1. **Measure** — write the metric buckets for the virtual seconds that have elapsed.
-2. **Gate** — if the simulation is in its outage, admit nothing and stop here.
-3. **Select** — pull candidate deliveries, evaluate each consumer's policy against them (drops are
+1. **Reclaim** — return deliveries whose lease has expired to the queue, so a dead worker's rows stop
+   holding capacity that its consumer is still owed.
+2. **Measure** — write the metric buckets for the virtual seconds that have elapsed.
+3. **Gate** — if the simulation is in its outage, admit nothing and stop here.
+4. **Select** — pull candidate deliveries, evaluate each consumer's policy against them (drops are
    recorded as `expired`/`superseded` and never reach a worker), then ration what survives across
    consumers by weight.
-4. **Admit** — flip the survivors to `ready`.
+5. **Admit** — flip the survivors to `ready`.
+
+Reclamation comes first, and ahead of the outage gate: leases go on expiring while the pipeline is
+down, and a worker that died just before an outage must not hold its rows through the whole of it.
 
 Policy runs *inside* candidate selection rather than before it, because a policy drop consumes a
 candidate slot but not an *attempt* — and fairness is measured in attempts. Rationing candidates
@@ -231,7 +253,8 @@ app/
     policy.py     max_staleness_s and latest_by_key, evaluated at dispatch
     admission.py  the budget, the candidate query, the fair allocation, the ready flip
     metrics.py    derived counters, sampled gauges, backfill on failover
-    service.py    one pass: lead, measure, admit
+    reaper.py     expired leases back to the queue, on a timeout and never on liveness
+    service.py    one pass: lead, reclaim, measure, admit
   worker/
     transport.py  the ConsumerTransport seam: simulated, and an HTTP stub
     claim.py      SKIP LOCKED claim, lease, and the completion state machine
@@ -242,8 +265,8 @@ frontend/src/
   hooks/useRun.ts all polling and derived state, in one place
   runs.ts         per-browser run history, in localStorage
   transform/      API rows -> chart series
-  components/     the two charts, consumer cards, controls, run list
-alembic/          one migration
+  components/     the two charts, consumer cards, controls, run list, process strip
+alembic/          the schema, and lease reclamation
 scripts/          gen_openapi.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh
 ```
 
@@ -262,6 +285,7 @@ GET    /api/simulation/{id}/consumer                  consumers with live counte
 GET    /api/simulation/{id}/metrics?since_bucket=N    cursor page of chart buckets
 GET    /api/simulation/{id}/decisions?limit=50        newest-first decision feed
 GET    /api/process                                   live processes, 15s heartbeat filter
+POST   /api/process/{id}/kill                         exit that process without draining
 GET    /api/health
 ```
 

@@ -1,10 +1,11 @@
 """Enumerations shared across the three process types.
 
 These are stored as ``TEXT`` with a ``CHECK`` constraint rather than as native
-Postgres enums. Adding a value to a native enum needs a migration; a ``CHECK``
-needs an edit. ``AttemptOutcome`` is a live candidate to gain ``lease_expired``
-if the reaper is ever un-scoped, and ``terminal_reason`` is inherently
-open-ended, so the flexibility is worth more than the storage.
+Postgres enums. Either way a new value needs a migration, but a ``CHECK`` is
+dropped and recreated in one reversible statement, where an enum value once
+added cannot be taken away. ``AttemptOutcome`` gained ``lease_expired`` exactly
+that way, and ``terminal_reason`` is inherently open-ended, so the flexibility
+is worth more than the storage.
 """
 
 from __future__ import annotations
@@ -54,9 +55,18 @@ TERMINAL_DELIVERY_STATES: frozenset[DeliveryState] = frozenset(
 
 
 class AttemptOutcome(StrEnum):
+    """How one attempt ended.
+
+    ``LEASE_EXPIRED`` is the one a worker never writes. The conductor's reaper
+    writes it when a lease expires with the attempt still open, which is what a
+    worker dying mid-attempt leaves behind
+    (:func:`app.conductor.reaper.reclaim_expired_leases`).
+    """
+
     OK = "ok"
     SERVER_ERROR = "5xx"
     TIMEOUT = "timeout"
+    LEASE_EXPIRED = "lease_expired"
 
 
 class CoalesceMode(StrEnum):

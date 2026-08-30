@@ -33,12 +33,13 @@ serves a real three-consumer outage-and-recovery run. There is a live system wor
 earlier than the plan assumed. The old Phase 3a is now almost entirely gone: seeding landed in Phase 1, and the
 `global_attempts_per_s` tuning splits into a Phase 2 sanity check and the Phase 4 tuning pass.
 
-Scoped out: **the worker-failure story** — both simulated process kills and lease reclamation, cut together since
-neither is worth much without the other. Workers still stamp `leased_by` / `lease_expires_at`, so the reaper stays a
-~20-line addition rather than a migration, but nothing reclaims an expired lease today: a worker dying mid-attempt
-strands its `in_flight` rows and permanently costs that consumer capacity. Acceptable because `simulation_id`
-namespacing confines the damage to one ~45-second run and Reset clears it. **Leader election survives the cut** — it is
-~10 lines and answers the loudest architectural objection. See [Cut List](#cut-list) for what goes next.
+Originally scoped out and since built: **the worker-failure story** — simulated process kills and lease reclamation,
+which were cut together on the grounds that neither is worth much without the other, and landed together for the same
+reason. It cost more than the "~20-line addition" the cut assumed: a migration for the index and the new attempt
+outcome, a lease fence on the completion path so a slow worker cannot undo a reclamation, and a kill that has to land
+*mid-batch* to strand anything at all. See §Leases in [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md). **Leader election
+survived the original cut** — it is ~10 lines and answers the loudest architectural objection. See
+[Cut List](#cut-list) for what goes next.
 
 ## Dependency Graph
 
@@ -194,8 +195,8 @@ Required, not optional.
   says so it reads as unfairness
 - README with the deployed link and a 60-second "what am I looking at"
 - Update `DESIGN_RATIONALE.md`: the coalescing/event-log tradeoff, time spent, extensions
-- ~5 min video. Worth 30 seconds naming what was scoped out and why — worker-failure recovery is designed and
-  documented but not built, and saying so is stronger than hoping nobody asks
+- ~5 min video. Worth 30 seconds naming what was scoped out and why — saying so is stronger than hoping nobody asks.
+  Worth another 30 on the kill button, which is the one failure the video can *show* rather than describe
 
 ---
 

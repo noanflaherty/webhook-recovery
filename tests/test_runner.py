@@ -85,9 +85,9 @@ async def test_a_stop_request_abandons_registration(monkeypatch: pytest.MonkeyPa
 async def test_the_loop_body_finishes_before_the_drain_completes() -> None:
     """The drain guarantee: an iteration that has started is allowed to finish.
 
-    Lease reaping is out of scope, so a worker killed mid-attempt strands its
-    in_flight rows permanently. This is what keeps the shutdown path we *do*
-    control from doing that.
+    A worker killed mid-attempt strands its in_flight rows until the lease
+    expires. The reaper recovers them, but only after a TTL of lost capacity --
+    so the shutdown paths the system controls pay nothing at all.
     """
     started = asyncio.Event()
     finished = False

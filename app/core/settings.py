@@ -79,8 +79,9 @@ class Settings(BaseSettings):
     # --- Process registry -------------------------------------------------
     heartbeat_interval_s: float = 3.0
     #: A process is "live" in GET /api/process if it heartbeat within this
-    #: window. Liveness is a read-time filter, never a reaper: stale rows from
-    #: prior deploys accumulate harmlessly and are never read.
+    #: window. Nothing reclaims a stale row in order to decide that, and nothing
+    #: in the delivery path reads this table at all -- including the lease
+    #: reaper, which goes on expiry rather than on liveness.
     process_liveness_window_s: float = 15.0
 
     # --- Conductor --------------------------------------------------------

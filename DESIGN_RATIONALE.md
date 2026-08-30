@@ -108,6 +108,27 @@ the wrong one for an audit log, so it's opt-in per (consumer, event type), off u
 every drop is recorded as `superseded` with the id of the delivery that replaced it. Nothing silently
 disappears; it's a decision the consumer made, written down where they can see it.
 
+**Leases expire on a timeout, and nothing ever asks whether a worker is alive.** The conductor reclaims
+a delivery when `lease_expires_at` has passed, not when the process registry says the worker that held
+it is gone. That is slower — a dead worker's batch sits idle for the rest of its TTL even when we
+already know it died — and it is the trade I wanted, because it means the correctness path contains no
+failure detector to be wrong. Two details cost me more thought than the sweep itself. The `attempt` row
+is written when the attempt *starts*, so reclamation has to **close** it rather than insert a second
+one: a lease outlives the fairness window six times over, so a fresh row would charge a consumer now for
+an attempt it already paid for, and then throttle it for capacity a dead worker never spent on its
+behalf. And a worker can be *slow* rather than dead — sleeping in the transport against a consumer
+that's down — so it can have its lease expire while perfectly alive and then arrive to complete work
+that's already been requeued. Every write on the completion path is fenced on `leased_by`, which turns
+that from a double send into a no-op.
+
+**The kill button is in the product, not in the tests.** `POST /api/process/{id}/kill` sets a flag the
+target reads back on the heartbeat it was already making, then exits with `os._exit` — no drain, no
+lock release, no deregistration. Shipping a destructive control with no auth in front of it is a real
+cost, and I took it because a recovery path nobody can trigger is a claim rather than a feature. The
+part I got wrong first: killing a worker at an arbitrary moment strands nothing, because a batch is a
+couple of milliseconds inside a 20ms loop. It has to land between the committed claim and the
+completion that answers it, and that placement is the reason the control is worth having at all.
+
 **Three processes instead of one.** One process would have been faster to build and deterministic to
 test. Splitting into api, conductor and worker cost me hours and bought the shape the argument actually
 needs: leader election is real, the workers are genuinely stateless, and "the conductor is a singleton"
@@ -115,18 +136,6 @@ is something `GET /api/process` will show you, and `scripts/verify.sh` asserts, 
 claim in a document.
 
 ## What I left out, and why
-
-**Lease reclamation.** Leases are recorded but never reclaimed. A worker that dies mid-attempt strands
-its `in_flight` rows, and because those rows count against the consumer's `concurrency_cap`, that
-consumer permanently loses slots. This is a real bug, not a simplification — it's bounded here only
-because runs are namespaced by `simulation_id` and Reset starts a clean one. Fixing it is a reaper that
-sweeps expired leases back to `ready`, plus an `attempt.outcome` of `lease_expired`; the enum is `TEXT`
-+ `CHECK` partly so adding it is an edit rather than a migration. I chose to spend the time on the two
-claims instead, and I'd rather name it than have it found.
-
-**Chaos controls.** There's no button to kill a worker mid-flight, because without lease reclamation the
-system has no good answer for what happens next. Graceful stop is the failure I do handle, and it's the
-one leader election actually turns on.
 
 **Per-consumer retry policy.** Backoff and the retry cap are global settings. Making them per-consumer is
 another column and another join, and it doesn't demonstrate anything the staleness bound doesn't already.
@@ -136,8 +145,8 @@ coalescing mode would only prove it twice.
 
 ## Where I'd take it next
 
-The first thing I'd fix is lease reclamation, because it's the one outstanding correctness gap. After
-that: real HTTP delivery against a live consumer (the transport seam is already there and the stub is
-written), per-consumer retry policy, and moving the fairness window out of Postgres once the attempt
-table is large enough that the grouped query stops being cheap. Longer list, with the scaling analysis,
-in [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) §Future Work and §At Real Scale.
+Real HTTP delivery against a live consumer is the obvious next one — the transport seam is already
+there and the stub is written. After that: per-consumer retry and lease policy, faster lease
+reclamation off the heartbeat rather than the timeout, and moving the fairness window out of Postgres
+once the attempt table is large enough that the grouped query stops being cheap. Longer list, with the
+scaling analysis, in [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md) §Future Work and §At Real Scale.
