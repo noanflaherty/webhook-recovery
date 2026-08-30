@@ -7,15 +7,13 @@
  * per virtual second to the system the page exists to measure. The instrument
  * would become the reading.
  *
- * So a run is started by a click, and "replay the recorded run" is offered
- * beside it — which is also the only thing that works once the platform has
- * spun the stack down.
+ * So a run is started by a click. Nothing on this screen reaches the api until
+ * you press it.
  */
 import { PhaseTrack } from './PhaseTrack'
 
 interface Props {
   onStart: () => void
-  onReplay: () => void
   /** Null when this browser has no history yet, which is the first-visit case. */
   onViewRuns: (() => void) | null
   runCount: number
@@ -23,7 +21,7 @@ interface Props {
   error: string | null
 }
 
-export function EmptyState({ onStart, onReplay, onViewRuns, runCount, busy, error }: Props) {
+export function EmptyState({ onStart, onViewRuns, runCount, busy, error }: Props) {
   return (
     <section className="empty">
       <h1>webhook-recovery</h1>
@@ -49,12 +47,9 @@ export function EmptyState({ onStart, onReplay, onViewRuns, runCount, busy, erro
         <button type="button" className="primary" onClick={onStart} disabled={busy}>
           Start a run
         </button>
-        <button type="button" onClick={onReplay} disabled={busy}>
-          Replay the recorded run
-        </button>
         {/*
           Only once there is something to show. On a first visit this is the
-          screen that has to explain the project in two buttons, and a third one
+          screen that has to explain the project in one button, and a second one
           leading to an empty list would cost that for nothing.
         */}
         {onViewRuns && (
@@ -65,8 +60,8 @@ export function EmptyState({ onStart, onReplay, onViewRuns, runCount, busy, erro
       </div>
 
       <p className="caption">
-        About 32 real seconds at 20×. The replay is a run recorded to fixtures and needs no backend,
-        which is also what you get if the deployment has gone to sleep.
+        About 32 real seconds at 20×. Runs keep their own URL and stay readable afterwards, so two
+        of them side by side is how the scheduler comparison gets made.
       </p>
     </section>
   )

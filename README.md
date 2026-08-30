@@ -38,8 +38,8 @@ Three consumers, each demonstrating exactly one thing:
 **What to touch.** Runs start on **Fair drain**, which is what the system does. Mid-outage-recovery, flip
 the scheduler to **FIFO** and back: the attempts-share chart changes slope within a tick, and Clover's
 segment collapses from an equal third to a sliver and recovers. **Pause**, **speed** and **Reset** are the
-other three knobs. If the backend is asleep, *view the
-recorded run* serves a committed fixture of a real run against a local clock — no backend needed.
+other three knobs. Every run keeps its own `?sim=` URL and stays readable once it is done, so the
+scheduler comparison is two links rather than a thing you have to narrate; **your runs** lists them.
 
 A representative fair run, with policy on:
 
@@ -141,7 +141,7 @@ make worker / make conductor     # one of each, on the host
 make web                         # vite on :5173, proxying /api to :8000
 make psql                        # a shell on the compose database
 make check                       # lint + typecheck + test, backend and frontend
-make fixtures                    # regenerate fixtures and openapi.json from the models
+make openapi                     # regenerate openapi.json from the models
 ```
 
 ## Verify
@@ -149,7 +149,7 @@ make fixtures                    # regenerate fixtures and openapi.json from the
 ```bash
 make check                       # ruff, mypy --strict, pytest, frontend lint/build/test
 make migration-check             # the migration still matches the models
-make fixtures-check              # openapi.json and the fixtures are not stale
+make openapi-check               # openapi.json is not stale
 make verify                      # health, processes, schema, clock, pipeline, bundle
 ```
 
@@ -238,21 +238,20 @@ app/
     service.py    one iteration: claim, gather, complete
 frontend/src/
   App.tsx         layout, run identity in the URL
-  api/            the DataSource seam: live (polling) and replay (fixtures)
+  api/            typed fetch wrappers over the routes, and the frozen contract
   hooks/useRun.ts all polling and derived state, in one place
   runs.ts         per-browser run history, in localStorage
   transform/      API rows -> chart series
   components/     the two charts, consumer cards, controls, run list
-  fixtures/       a complete recorded run, generated from the Pydantic models
 alembic/          one migration
-scripts/          gen_fixtures.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh
+scripts/          gen_openapi.py, verify.sh, check_clock.py, start-api.sh, deploy_railway.sh
 ```
 
 ## The API contract
 
-`app/api/schemas.py` holds the response models. `frontend/src/fixtures/*.json` are generated **from
-those models**, so a fixture cannot drift from the contract, and `openapi.json` is committed alongside
-as the generated witness of it. `make fixtures-check` fails if either is stale.
+`app/api/schemas.py` holds the response models and `frontend/src/api/types.ts` is a hand-written
+mirror of them. `openapi.json` is committed as the **generated witness** of that contract, so the
+mirror has something to be diffed against; `make openapi-check` fails if it is stale.
 
 ```
 POST   /api/simulation                                create (= reset), seeds consumers + policies
@@ -311,7 +310,7 @@ request and push, the fourth only on `main`.
 
 | Job | What it protects |
 |---|---|
-| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture every scheduler test is built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the contract cannot drift out from under the frontend. |
+| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture every scheduler test is built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and an `openapi.json` staleness check, so the contract cannot drift out from under the frontend. |
 | **bundle** | `npm run build`, which is `tsc -b && vite build` — so the frontend type-checks here too. `oxlint` and the `transform/` unit tests run locally through `make check`, not in CI. |
 | **image** | Builds the Dockerfile, then **boots it**: starts Postgres, runs the real `scripts/start-api.sh`, waits for `/api/health`, and checks a worker registers. A green `docker build` only says the image compiles, and the Dockerfile is what actually ships. |
 | **deploy** | `main` only, gated on the other three. Deploys api → conductor → worker via [`scripts/deploy_railway.sh`](scripts/deploy_railway.sh), then runs `verify.sh` against the public URL. |

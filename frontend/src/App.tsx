@@ -1,22 +1,18 @@
 /**
  * The instrument panel.
  *
- * Layout and run identity; everything that moves lives in `useRun`, and
- * everything the panels read comes through one `DataSource`.
+ * Layout and run identity; everything that moves lives in `useRun`.
  *
  * **Run identity lives in the URL.** `?sim=<uuid>` names the run, mirrored to
- * localStorage so a refresh resumes it, and `?source=replay` selects the
- * recorded fixtures instead. Keying off an explicit id rather than "whatever
- * the latest run is" is what makes a run a durable artifact: a naive run and a
- * fair one each keep their own URL, so the two can be compared side by side
- * rather than only through the toggle.
+ * localStorage so a refresh resumes it. Keying off an explicit id rather than
+ * "whatever the latest run is" is what makes a run a durable artifact: a naive
+ * run and a fair one each keep their own URL, so the two can be compared side
+ * by side rather than only through the toggle.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import './App.css'
 import { LiveSource, createRun, retireRun } from './api/client'
-import { ReplaySource } from './api/replay'
-import type { DataSource } from './api/source'
 import { BacklogChart } from './components/BacklogChart'
 import { ConsumerCards } from './components/ConsumerCards'
 import { ControlBar } from './components/ControlBar'
@@ -31,16 +27,12 @@ const STORAGE_KEY = 'webhook-recovery:sim'
 /**
  * What the page is pointed at.
  *
- * `runs` is a view rather than a data source -- it reads localStorage and a
- * handful of one-shot fetches, and has no simulation of its own -- but it lives
- * in `Target` anyway so that it is addressable, back/forward works across it,
- * and there is still exactly one function that decides what the page shows.
+ * `runs` is a view rather than a run -- it reads localStorage and a handful of
+ * one-shot fetches, and has no simulation of its own -- but it lives in `Target`
+ * anyway so that it is addressable, back/forward works across it, and there is
+ * still exactly one function that decides what the page shows.
  */
-type Target =
-  | { kind: 'live'; simId: string }
-  | { kind: 'replay' }
-  | { kind: 'runs' }
-  | null
+type Target = { kind: 'live'; simId: string } | { kind: 'runs' } | null
 
 function remembered(): string | null {
   // Private-mode browsers throw on access rather than returning null.
@@ -63,7 +55,6 @@ function remember(simId: string | null): void {
 function readTarget(): Target {
   const params = new URLSearchParams(window.location.search)
   if (params.get('view') === 'runs') return { kind: 'runs' }
-  if (params.get('source') === 'replay') return { kind: 'replay' }
   const fromUrl = params.get('sim')
   if (fromUrl) return { kind: 'live', simId: fromUrl }
   const fromStorage = remembered()
@@ -73,20 +64,14 @@ function readTarget(): Target {
 function writeUrl(target: Target): void {
   const url = new URL(window.location.href)
   url.searchParams.delete('sim')
-  url.searchParams.delete('source')
   url.searchParams.delete('view')
   if (target?.kind === 'live') url.searchParams.set('sim', target.simId)
-  if (target?.kind === 'replay') url.searchParams.set('source', 'replay')
   if (target?.kind === 'runs') url.searchParams.set('view', 'runs')
   window.history.replaceState(null, '', url)
 }
 
 export default function App() {
   const [target, setTarget] = useState<Target>(readTarget)
-  // Bumped to build a fresh source, which is how "restart replay" clears the
-  // metrics buffer: `useRun` keys all of its state off source identity, so
-  // there is no separate reset path to keep in step with the polling one.
-  const [generation, setGeneration] = useState(0)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   // Held in state rather than read at render: this component re-renders at the
@@ -94,12 +79,13 @@ export default function App() {
   // print one number would be silly. Every path that changes it says so.
   const [runCount, setRunCount] = useState(() => listRuns().length)
 
-  const source = useMemo<DataSource | null>(() => {
-    if (!target || target.kind === 'runs') return null
-    return target.kind === 'replay' ? new ReplaySource() : new LiveSource(target.simId)
-    // `generation` is a deliberate cache-buster rather than an input.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, generation])
+  // Rebuilt when the run changes, and `useRun` keys all of its state off source
+  // identity -- so switching runs clears the metrics buffer with no separate
+  // reset path to keep in step with the polling one.
+  const source = useMemo<LiveSource | null>(
+    () => (target?.kind === 'live' ? new LiveSource(target.simId) : null),
+    [target],
+  )
 
   const run = useRun(source)
 
@@ -126,6 +112,10 @@ export default function App() {
   useEffect(() => {
     if (target?.kind === 'live') {
       remember(target.simId)
+      // localStorage is the external system this synchronizes with, which is
+      // what effects are for, and the count is what the write hands back --
+      // deriving it at render would re-parse the history on every clock tick.
+      // eslint-disable-next-line react/set-state-in-effect
       setRunCount(rememberRun(target.simId).length)
     } else if (target?.kind !== 'runs') {
       remember(null)
@@ -146,10 +136,6 @@ export default function App() {
   }, [go])
 
   const reset = useCallback(async () => {
-    if (source instanceof ReplaySource) {
-      setGeneration((n) => n + 1)
-      return
-    }
     setBusy(true)
     setActionError(null)
     try {
@@ -175,9 +161,8 @@ export default function App() {
     } finally {
       setBusy(false)
     }
-  }, [go, source, target])
+  }, [go, target])
 
-  const replay = useCallback(() => go({ kind: 'replay' }), [go])
   const viewRuns = useCallback(() => go({ kind: 'runs' }), [go])
 
   // Leaving the list goes back to the run you came from if there still is one,
@@ -202,7 +187,6 @@ export default function App() {
           busy={busy}
           onOpen={(simId) => go({ kind: 'live', simId })}
           onStart={() => void start()}
-          onReplay={replay}
           onHistoryChange={() => setRunCount(listRuns().length)}
         />
       </main>
@@ -216,7 +200,6 @@ export default function App() {
       <main className="app">
         <EmptyState
           onStart={() => void start()}
-          onReplay={replay}
           onViewRuns={runCount > 0 ? viewRuns : null}
           runCount={runCount}
           busy={busy}
@@ -236,20 +219,15 @@ export default function App() {
 
   return (
     <main className="app">
+      {/*
+        No "live" badge any more. It earned its place when a recorded run was
+        the other possibility and the reader had to be told which one they were
+        looking at; with one kind of run left it was a label that is true of
+        every page load, which is a label that says nothing. Whether *this* run
+        is still moving is the transport's job, and it already says so.
+      */}
       <div className="titlebar">
         <h1>webhook-recovery</h1>
-        <span className={`chip source-${source.kind}`}>
-          {source.kind === 'replay' ? 'recorded run' : 'live'}
-        </span>
-        {source.kind === 'replay' ? (
-          <button type="button" className="link" onClick={() => void start()} disabled={busy}>
-            start a live run
-          </button>
-        ) : (
-          <button type="button" className="link" onClick={replay}>
-            view the recorded run
-          </button>
-        )}
         {runCount > 0 && (
           <button type="button" className="link" onClick={viewRuns}>
             your runs ({runCount})
@@ -260,7 +238,6 @@ export default function App() {
       <ControlBar
         simulation={run.simulation}
         virtualNowS={run.virtualNowS}
-        sourceKind={source.kind}
         busy={busy}
         onPatch={(body) => void run.patch(body)}
         onReset={() => void reset()}

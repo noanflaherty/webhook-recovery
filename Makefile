@@ -93,15 +93,6 @@ worker: ## Run one worker
 web: ## Run the Vite dev server on :5173, proxying /api to :8000
 	$(NPM) run dev
 
-# No API, no database, no containers. The UI runs against the committed
-# fixtures in frontend/src/fixtures/, replayed against a local virtual clock --
-# a full outage-and-recovery run in about 32 real seconds. This is the fastest
-# way to see the charts, and the only one that still works when the backend is
-# broken or half-written.
-.PHONY: web-replay
-web-replay: ## Run the UI on :5173 against the recorded fixtures -- no backend needed
-	$(NPM) run dev -- --open '/?source=replay'
-
 .PHONY: psql
 psql: ## Open a psql shell on the compose database
 	$(COMPOSE) exec postgres psql -U postgres -d webhook_recovery
@@ -178,16 +169,16 @@ build-web: ## Type-check and build the frontend bundle
 # Contract
 # --------------------------------------------------------------------------
 
-.PHONY: fixtures
-fixtures: ## Regenerate the frontend fixtures and openapi.json from the models
-	$(UV) run python scripts/gen_fixtures.py
+.PHONY: openapi
+openapi: ## Regenerate openapi.json from the models
+	$(UV) run python scripts/gen_openapi.py
 
-.PHONY: fixtures-check
-fixtures-check: ## Fail if the committed fixtures are stale
-	@$(MAKE) --no-print-directory fixtures >/dev/null
-	@git diff --quiet -- frontend/src/fixtures openapi.json \
-		|| (echo "fixtures are stale -- run 'make fixtures' and commit the result" && exit 1)
-	@echo "fixtures up to date"
+.PHONY: openapi-check
+openapi-check: ## Fail if the committed openapi.json is stale
+	@$(MAKE) --no-print-directory openapi >/dev/null
+	@git diff --quiet -- openapi.json \
+		|| (echo "openapi.json is stale -- run 'make openapi' and commit the result" && exit 1)
+	@echo "openapi.json up to date"
 
 # --------------------------------------------------------------------------
 # Verification

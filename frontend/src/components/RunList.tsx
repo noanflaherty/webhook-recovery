@@ -37,7 +37,6 @@ interface Props {
   busy: boolean
   onOpen: (simId: string) => void
   onStart: () => void
-  onReplay: () => void
   /** Called after a row is forgotten, so the header's count follows. */
   onHistoryChange: () => void
 }
@@ -52,14 +51,7 @@ function ago(ms: number): string {
   return `${Math.round(hours / 24)}d ago`
 }
 
-export function RunList({
-  currentSimId,
-  busy,
-  onOpen,
-  onStart,
-  onReplay,
-  onHistoryChange,
-}: Props) {
+export function RunList({ currentSimId, busy, onOpen, onStart, onHistoryChange }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
     listRuns().map((record) => ({ state: 'loading', record })),
   )
@@ -122,9 +114,6 @@ export function RunList({
         <div className="runs-actions">
           <button type="button" className="primary" onClick={onStart} disabled={busy}>
             Start a new run
-          </button>
-          <button type="button" onClick={onReplay} disabled={busy}>
-            Replay the recorded run
           </button>
         </div>
       </div>

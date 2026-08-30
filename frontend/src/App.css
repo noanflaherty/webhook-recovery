@@ -2,7 +2,7 @@
  * The instrument panel: tokens and surfaces.
  *
  * The governing idea is that this page is a *strip-chart recorder*, not a
- * dashboard. It plays a recorded run back at 20x and draws three signal traces
+ * dashboard. It draws three live signal traces at 20x virtual speed
  * against a scripted timeline, so the visual language is taken from
  * instrumentation rather than from web dashboards:
  *
@@ -273,19 +273,13 @@ h2 {
 }
 
 .chip.phase-normal,
-.chip.state-delivered,
-.chip.source-live {
+.chip.state-delivered {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 40%, transparent);
 }
 
 .chip.state-failed {
   color: var(--alarm);
-}
-
-.chip.source-replay {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 /* -- transport ------------------------------------------------------------- */
@@ -423,6 +417,15 @@ h2 {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 0.35em;
+  /*
+    Each segment is its own query container, so the duration below can be
+    dropped per segment on width rather than at one page-level breakpoint --
+    `Normal` is a seventh of the track and runs out of room long before
+    `Recovery` does. Safe on a flex item whose width comes from `flex-grow`
+    against a zero basis: the inline size never depends on the content.
+  */
+  container-type: inline-size;
   padding: 0 0.4rem;
   font-family: var(--face-data);
   font-size: 0.5rem;
@@ -437,6 +440,42 @@ h2 {
 
 .track-seg + .track-seg {
   border-left: 1px solid var(--rule);
+}
+
+/*
+  The phase's duration. Quieter than the name it follows -- the name is what you
+  read, the duration is what you check -- and shown only when its own segment is
+  wide enough to hold the pair without clipping mid-word.
+*/
+.track-note {
+  display: none;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+/*
+  One threshold per phase, because the three labels are different lengths and a
+  single one has to be set for the longest -- which would hide `(2 min)` on a
+  `Normal` segment with room to spare, since that is the shortest note in the
+  narrowest segment. Measured from the rendered type rather than estimated: the
+  notes need 97, 143 and 157px, and these are those with a little slack.
+*/
+@container (min-width: 6.5rem) {
+  [data-phase='normal'] .track-note {
+    display: inline;
+  }
+}
+
+@container (min-width: 9.25rem) {
+  [data-phase='outage'] .track-note {
+    display: inline;
+  }
+}
+
+@container (min-width: 10rem) {
+  [data-phase='recovery'] .track-note {
+    display: inline;
+  }
 }
 
 /* Hatched, not tinted: the same treatment the charts give the same window. */

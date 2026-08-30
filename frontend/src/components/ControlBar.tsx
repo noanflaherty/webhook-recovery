@@ -7,7 +7,6 @@
  * UI deliberately does not model them as separate operations either.
  */
 import type { SimulationRead, SimStatus } from '../api/types'
-import type { SourceKind } from '../api/source'
 import { formatVirtual } from '../scenario'
 import { PhaseTrack } from './PhaseTrack'
 
@@ -16,23 +15,14 @@ const SPEEDS = [1, 5, 10, 20, 50]
 interface Props {
   simulation: SimulationRead
   virtualNowS: number
-  sourceKind: SourceKind
   busy: boolean
   onPatch: (body: { status?: SimStatus; speed_multiplier?: number; fair_drain_enabled?: boolean }) => void
   onReset: () => void
 }
 
-export function ControlBar({
-  simulation,
-  virtualNowS,
-  sourceKind,
-  busy,
-  onPatch,
-  onReset,
-}: Props) {
+export function ControlBar({ simulation, virtualNowS, busy, onPatch, onReset }: Props) {
   const running = simulation.status === 'running'
   const done = simulation.status === 'done'
-  const replay = sourceKind === 'replay'
   const fair = simulation.fair_drain_enabled
 
   return (
@@ -69,7 +59,7 @@ export function ControlBar({
               type="button"
               aria-pressed={!fair}
               onClick={() => onPatch({ fair_drain_enabled: false })}
-              disabled={busy || replay || done}
+              disabled={busy || done}
             >
               FIFO
             </button>
@@ -77,12 +67,11 @@ export function ControlBar({
               type="button"
               aria-pressed={fair}
               onClick={() => onPatch({ fair_drain_enabled: true })}
-              disabled={busy || replay || done}
+              disabled={busy || done}
             >
               Fair drain
             </button>
           </div>
-          {replay && <span className="chip muted">recorded</span>}
 
           <label className="knob">
             <span>speed</span>
@@ -108,7 +97,7 @@ export function ControlBar({
           </button>
 
           <button type="button" onClick={onReset} disabled={busy}>
-            {replay ? 'Restart replay' : 'Reset'}
+            Reset
           </button>
         </div>
       </div>

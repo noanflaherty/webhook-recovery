@@ -533,6 +533,23 @@ Both did their job during development and neither survived contact with the fini
 something the page never disputes, and once the consumer cards carry per-consumer expired/superseded totals the feed is
 a slower way to read the same fact. They were removed to keep the page to the two claims and nothing else.
 
+**The recorded run, also removed.** The UI shipped a second data source: `ReplaySource`, which served ~520 kB of
+committed fixtures against a locally-driven virtual clock at `?source=replay`, so the deployed URL stayed useful when
+the platform had spun the stack down. It was cut because it answered a question nobody was asking and raised one
+nobody wanted: a reviewer landing on a page showing a *recording* has to work out what is live, what is canned, which
+controls do anything, and whether the numbers in front of them were measured or drawn. The fixtures were synthesized
+rather than recorded, which made the last of those genuinely ambiguous.
+
+Removing it took the `DataSource` interface with it. Its entire justification was having two implementations; an
+interface with one, whose docstring cites a sibling that no longer exists, costs a reader a detour to discover nothing
+is there. `LiveSource` is the concrete type now, and `useRun` takes it directly.
+
+The cost is real and worth stating: **a sleeping deployment now shows an error rather than a reference run.** The
+mitigation is that runs are permanent and addressable, so a link to a finished run is the durable artifact the
+recording was standing in for — but that link needs the backend awake too. `frontend/src/transform/series.test.ts`
+used to build against those fixtures and now constructs its own series, which is an improvement: the properties the
+tests depend on are stated in the file that depends on them rather than being emergent facts about an opaque blob.
+
 `GET /api/simulation/{id}/decisions` and `GET /api/process` are **unchanged and still served** — `scripts/verify.sh`
 asserts against both, and they remain the honest way to inspect a run. What was removed is the decision to put them on
 the page, not the data. That is also why `completed_at` is still non-negotiable on every terminal write
@@ -542,7 +559,7 @@ the counters the cards now carry.
 ### Visual language
 
 The page is treated as a **strip-chart recorder** rather than a dashboard, because that is what it is: it plays a
-recorded run back at 20×, draws three signal traces against a scripted timeline, and marks a fault window. Four rules
+run at 20× virtual speed, draws three signal traces against a scripted timeline, and marks a fault window. Four rules
 follow from that and are worth stating, since each one is the opposite of the web-dashboard default:
 
 - **The plot field is recessed** — darker than the panels around it, the way a screen is inset into a chassis.

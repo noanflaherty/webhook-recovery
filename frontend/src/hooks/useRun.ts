@@ -2,13 +2,12 @@
  * Everything that moves, in one place.
  *
  * Three pollers at two cadences, one metrics buffer, one interpolated clock.
- * Components below this are pure functions of what it returns, which is what
- * keeps the live and replay sources genuinely interchangeable -- neither of them
- * knows anything about timers.
+ * Components below this are pure functions of what it returns, so nothing that
+ * renders knows a timer exists.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { DataSource } from '../api/source'
+import type { LiveSource } from '../api/client'
 import type {
   ConsumerRead,
   MetricsBucket,
@@ -100,7 +99,7 @@ const STOPPED: ClockAnchor = { virtualS: 0, wallMs: 0, speed: 1, running: false 
  * `source` is nullable so the cold-landing screen -- which has no run to poll --
  * can render without this hook being called conditionally.
  */
-export function useRun(source: DataSource | null): RunState {
+export function useRun(source: LiveSource | null): RunState {
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY)
   const [virtualNowS, setVirtualNowS] = useState(0)
   const anchorRef = useRef<ClockAnchor>(STOPPED)

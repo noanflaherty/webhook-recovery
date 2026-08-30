@@ -174,9 +174,8 @@ def allocate(states: list[ConsumerState], headroom: dict[int, int], budget: int)
     """Weighted round-robin: hand out slots to whoever is furthest behind.
 
     One slot at a time, always to the consumer with the lowest
-    ``granted / weight`` -- the textbook weighted-fair-queueing choice, and the
-    integer form of ``scripts/gen_fixtures.py:fair_allocate``, which is the
-    allocation the committed charts were drawn against.
+    ``granted / weight`` -- the textbook weighted-fair-queueing choice, in
+    integer form because slots are indivisible.
 
     Work-conserving falls out for free: a consumer that reaches its headroom
     leaves the active set, and the remaining slots go to whoever is left. That

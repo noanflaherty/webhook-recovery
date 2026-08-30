@@ -6,12 +6,9 @@
  * bundle itself, and in development vite proxies `/api` to :8000 -- so the same
  * paths work in both and there is no base-URL configuration to get wrong.
  */
-import type { DataSource } from './source'
 import type {
   ConsumerRead,
-  DecisionsPage,
   MetricsPage,
-  ProcessRead,
   SimulationCreate,
   SimulationPatch,
   SimulationRead,
@@ -50,8 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-export class LiveSource implements DataSource {
-  readonly kind = 'live' as const
+export class LiveSource {
   readonly simulationId: string
 
   constructor(simulationId: string) {
@@ -72,16 +68,6 @@ export class LiveSource implements DataSource {
 
   getMetrics(sinceBucket: number): Promise<MetricsPage> {
     return request<MetricsPage>(`${this.base}/metrics?since_bucket=${sinceBucket}`)
-  }
-
-  getDecisions(limit = 50): Promise<DecisionsPage> {
-    return request<DecisionsPage>(`${this.base}/decisions?limit=${limit}`)
-  }
-
-  getProcesses(): Promise<ProcessRead[]> {
-    // Not per-simulation: the process registry is global, because processes
-    // outlive any one run.
-    return request<ProcessRead[]>('/api/process')
   }
 
   patch(body: SimulationPatch): Promise<SimulationRead> {

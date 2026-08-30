@@ -33,9 +33,24 @@ import { OUTAGE_ENDS_AT_S, OUTAGE_STARTS_AT_S, formatVirtual } from '../scenario
  */
 const NOMINAL_RUN_S = 900
 
+/** Virtual seconds as whole minutes: the scripted phases are exact multiples. */
+function minutes(seconds: number): string {
+  return `${Math.round(seconds / 60)} min`
+}
+
 interface Segment {
   key: string
   label: string
+  /**
+   * How long this phase lasts, as copy.
+   *
+   * The first two are scripted and exact. Recovery is not: it runs until the
+   * backlog is drained, which is both the variable the whole demo turns on and
+   * the number that differs between the two schedulers. Printing the track's
+   * own nominal length there would be inventing a duration the run does not
+   * have, so it says what actually ends it instead.
+   */
+  note: string
   from: number
   to: number
   fault?: boolean
@@ -49,15 +64,28 @@ interface Props {
 export function PhaseTrack({ virtualNowS }: Props) {
   const end = Math.max(NOMINAL_RUN_S, virtualNowS ?? 0)
   const segments: Segment[] = [
-    { key: 'normal', label: 'Normal', from: 0, to: OUTAGE_STARTS_AT_S },
+    {
+      key: 'normal',
+      label: 'Normal',
+      note: minutes(OUTAGE_STARTS_AT_S),
+      from: 0,
+      to: OUTAGE_STARTS_AT_S,
+    },
     {
       key: 'outage',
       label: 'Provider down',
+      note: minutes(OUTAGE_ENDS_AT_S - OUTAGE_STARTS_AT_S),
       from: OUTAGE_STARTS_AT_S,
       to: OUTAGE_ENDS_AT_S,
       fault: true,
     },
-    { key: 'recovery', label: 'Recovery', from: OUTAGE_ENDS_AT_S, to: end },
+    {
+      key: 'recovery',
+      label: 'Recovery',
+      note: 'until drained',
+      from: OUTAGE_ENDS_AT_S,
+      to: end,
+    },
   ]
   const live =
     virtualNowS === null
@@ -70,19 +98,27 @@ export function PhaseTrack({ virtualNowS }: Props) {
       role="img"
       aria-label={
         virtualNowS === null
-          ? 'A run: two minutes of normal traffic, a five-minute provider outage, then recovery until drained'
+          ? `A run: ${segments.map((s) => `${s.label}, ${s.note}`).join('; then ')}`
           : `${live ? live.label : 'Run complete'} at ${formatVirtual(virtualNowS)} of ${formatVirtual(end)}`
       }
     >
       {segments.map((segment) => (
         <div
           key={segment.key}
+          data-phase={segment.key}
           className={['track-seg', segment.fault ? 'is-fault' : '', segment === live ? 'is-live' : '']
             .filter(Boolean)
             .join(' ')}
           style={{ flexGrow: segment.to - segment.from, flexBasis: 0 }}
         >
           {segment.label}
+          {/*
+            Hidden by a container query when its own segment is too narrow to
+            hold it -- see App.css. Each segment answers for itself, so `Normal`
+            (a seventh of the track) drops its duration long before `Recovery`
+            does, rather than all three vanishing at one page-level breakpoint.
+          */}
+          <span className="track-note">({segment.note})</span>
         </div>
       ))}
       {virtualNowS !== null && (
