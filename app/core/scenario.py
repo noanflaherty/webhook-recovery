@@ -9,13 +9,13 @@ to agree about. ``is_outage`` is the conductor's admission gate and
 
 **The cast** -- three consumers, their subscriptions, Bolt's policies, and the
 producer's event mix -- is a constants table with one function that writes it.
-The phase plan put seeding in Phase 3, but fan-out reads ``subscription``: with
-no rows the walking skeleton produces nothing and cannot walk. Policies come
-along for free, and Phase 3's conductor reads them at dispatch time.
+Seeding lives here because fan-out reads ``subscription``: with no rows there
+is nothing to deliver. Policies come along with the consumers, and the conductor
+reads them at dispatch time.
 
 Rates are per *virtual* second and are back-derived from the committed frontend
-fixtures, so the charts a reviewer sees against real data have the same shape as
-the ones the frontend was built against.
+fixtures, so the charts drawn against real data have the same shape as the ones
+the frontend was built against.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ PHASE_DONE: Final = "done"
 def phase_at(virtual_s: float, *, outage_override: bool | None = None, done: bool = False) -> str:
     """Which act of the scenario a given virtual second falls in.
 
-    ``outage_override`` is the reviewer's manual switch: ``True`` forces the
+    ``outage_override`` is the manual switch: ``True`` forces the
     outage on, ``False`` forces it off, ``None`` follows the script.
     """
     if done:
@@ -63,9 +63,9 @@ def phase_at(virtual_s: float, *, outage_override: bool | None = None, done: boo
 #: The end of the scripted run: ~45 real seconds at 20x. The producer stops
 #: emitting here, which is what lets the backlog reach a *stable* zero -- and
 #: only then does "the run is finished" mean anything. It is set comfortably
-#: after the recovery drain completes (~830 virtual s in practice), so a
-#: reviewer watches the backlog reach zero while traffic is still arriving,
-#: which is the convincing version of catching up.
+#: after the recovery drain completes (~830 virtual s in practice), so the
+#: backlog reaches zero while traffic is still arriving, which is the convincing
+#: version of catching up.
 SCENARIO_ENDS_AT_S: Final = 900.0
 
 #: A backstop, not the normal way a run ends. It only ever catches a run that
@@ -86,14 +86,10 @@ def is_producing(virtual_s: float) -> bool:
 def is_finished(virtual_s: float, backlog: int) -> bool:
     """Whether a run is over: the script has ended and nothing is left to deliver.
 
-    This exists because **the conductor works on every running simulation in a
+    This matters because **the conductor works on every running simulation in a
     single pass**, so a simulation nobody retires keeps costing throughput
-    forever -- and the cost is paid by whichever run a reviewer is actually
-    watching. Every visit to the deployment leaves one behind, so it compounds.
-
-    Invisible locally, where there is one simulation. On the deployment it
-    presented as a backlog that tracked its arrival rate and never drained,
-    which reads exactly like a broken scheduler.
+    forever, at the expense of every other run in the same pass. Runs accumulate,
+    so the cost compounds.
 
     Both terms are load-bearing. Retiring on an empty backlog alone races the
     producer -- at 20x it commits another ~20 deliveries in the time a pass
@@ -121,9 +117,9 @@ def is_outage(virtual_s: float, *, outage_override: bool | None = None) -> bool:
 # ---------------------------------------------------------------------------
 #
 # Each of the three high-volume types exists to isolate exactly one behaviour,
-# so every drop in the demo is attributable to a single cause. Deliberately no
-# type carries two policies: it would be realistic, and a reviewer could no
-# longer tell which mechanism dropped a given event.
+# so every drop is attributable to a single cause. Deliberately no type carries
+# two policies: it would be realistic, and it would make the mechanism behind a
+# given drop ambiguous.
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,13 +139,12 @@ class EventTypeSpec:
 #:
 #: The second claim is that a consumer's own policy shrinks its backlog before
 #: any of it is sent, and that claim is only as visible as the share of the
-#: stream a policy can actually act on. At an even split across four types, only
-#: ~58% of Bolt's stream was droppable and its backlog line ran nearly parallel
-#: to Acme's -- the mechanism worked and did not *read*.
+#: stream a policy can act on. An even split across four types leaves only ~58%
+#: of Bolt's stream droppable, which is enough for the mechanism to work and not
+#: enough for it to read on a chart.
 #:
-#: The total is held at exactly 6.05/virtual s, unchanged, so peak backlog,
-#: drain time and the `global_attempts_per_s` contention ratio are all
-#: untouched: this moves volume between types rather than adding any.
+#: The total is 6.05 events per virtual second, which is what sets peak backlog,
+#: drain time, and the contention ratio against `global_attempts_per_s`.
 EVENT_MIX: Final[tuple[EventTypeSpec, ...]] = (
     # Money moved. Unique key, so `latest_by_key` could never collapse it even
     # if someone configured it -- the guarantee is structural, not just policy.
@@ -195,9 +190,9 @@ class ConsumerSpec:
     concurrency_cap: int = 8
     max_attempts_per_s: float = 20.0
 
-    # SimulatedTransport profile. Phase 1 seeds a perfectly healthy consumer --
-    # zero failure rate -- so the skeleton walks with "always 200" behaviour
-    # even though the worker's state machine handles every outcome.
+    # SimulatedTransport profile. Consumers are healthy by default -- zero
+    # failure rate -- even though the worker's state machine handles every
+    # outcome.
     sim_latency_s: float = 0.2
     sim_jitter_s: float = 0.05
     sim_failure_rate: float = 0.0

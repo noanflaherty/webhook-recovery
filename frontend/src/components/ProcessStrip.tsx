@@ -1,10 +1,9 @@
 /**
  * The live conductors and workers, and which conductor holds the lock.
  *
- * Carried over from the Phase 0 stub rather than rebuilt. It earns its space
- * for one reason: the fairness argument depends on admission being decided by a
- * *single* conductor, and this is the only place a reviewer can see that claim
- * is true of the running system rather than of the diagram.
+ * It earns its space for one reason: the fairness argument depends on admission
+ * being decided by a *single* conductor, and this is the only place that claim
+ * is visible as a property of the running system rather than of the diagram.
  *
  * Liveness is a read-time filter on the backend, never a reaper -- a process
  * that stops heartbeating simply stops appearing here.

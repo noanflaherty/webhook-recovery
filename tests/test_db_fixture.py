@@ -1,9 +1,8 @@
 """Proof that the transactional session fixture actually works.
 
-Not a test of the product -- a test of the test infrastructure. It exists
-because a rollback fixture that has never been run is a guess, and Phase 3 is
-the wrong time to find out that its scheduler tests are leaking rows into each
-other.
+Not a test of the product -- a test of the test infrastructure. The scheduler
+tests all assume that rows do not leak between tests, and a rollback fixture
+that is never itself asserted on is a guess.
 
 Skipped when no Postgres is reachable, so `uv run pytest` stays green on a
 machine with nothing running.

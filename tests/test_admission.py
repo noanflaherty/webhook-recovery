@@ -1,9 +1,8 @@
 """Admission control: the buffer ceiling, the rate ceiling, and the outage gate.
 
-The outage gate is the one that shows up on camera. If admission does not stop
-during the scripted outage there is no backlog to burn down, and the entire demo
-is a flat line -- so it is asserted here rather than discovered at recording
-time.
+The outage gate is the one everything else rests on. If admission does not stop
+during the scripted outage there is no backlog to burn down, and both claims
+lose the conditions they are made under.
 """
 
 from __future__ import annotations
@@ -107,7 +106,7 @@ async def _ready_count(conn: AsyncConnection, simulation_id: uuid.UUID) -> int:
 async def test_nothing_is_admitted_during_the_outage(
     session: AsyncSession, connection: AsyncConnection
 ) -> None:
-    """The single branch the whole demo curve rests on.
+    """The single branch the whole backlog curve rests on.
 
     Without it, events still land in the ledger during the outage but are also
     delivered during it -- backlogs stay flat, there is nothing to burn down,
@@ -140,7 +139,7 @@ async def test_work_is_admitted_outside_the_outage(
 async def test_the_scripted_outage_needs_no_override(
     session: AsyncSession, connection: AsyncConnection
 ) -> None:
-    """``outage_override`` is the reviewer's switch; the script is the default."""
+    """``outage_override`` is the manual switch; the script is the default."""
     sim = await _backlog(session, count=50)
     # Park the clock inside the scripted outage by rebasing its epoch there.
     sim.virtual_epoch = VIRTUAL_EPOCH_ZERO + timedelta(seconds=OUTAGE_STARTS_AT_S + 60)
@@ -266,10 +265,8 @@ async def test_a_drained_run_is_retired(session: AsyncSession, connection: Async
     """A finished simulation stops costing the conductor anything.
 
     A pass covers *every* running simulation, so one that nobody retires goes on
-    consuming throughput forever -- and the cost lands on whichever run a
-    reviewer is currently watching. Invisible locally, where there is one
-    simulation; on a shared deployment it compounds with every visit and
-    presents as a backlog that tracks its arrival rate and never drains.
+    consuming throughput forever, at the expense of every other run in the same
+    pass. Runs accumulate, so the cost compounds.
     """
     sim = a_simulation()
     session.add(sim)

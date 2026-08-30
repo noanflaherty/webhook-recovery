@@ -351,7 +351,7 @@ async def test_the_toggle_lets_the_small_consumer_catch_up(
     # And the mechanism behind it, so a failure says *why*.
     assert naive_shares.get("Clover CRM", 0.0) < 0.08, (
         "global FIFO gave Clover a fair share -- the provider is not contended, "
-        "so the toggle would be a visible no-op on camera"
+        "so the toggle has nothing to change"
     )
     assert fair_shares["Clover CRM"] > 2 * naive_shares.get("Clover CRM", 0.0)
 

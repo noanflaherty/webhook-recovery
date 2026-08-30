@@ -1,7 +1,7 @@
 """The runner's boot and drain behaviour.
 
-Both properties here were found the expensive way -- by a Railway deploy, not by
-reading the code -- which is exactly what Phase 0's early deploy was for.
+Neither property shows up locally, where the database is already migrated and
+processes are stopped by hand. Both decide whether a deploy comes up.
 """
 
 from __future__ import annotations

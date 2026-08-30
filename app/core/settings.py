@@ -1,6 +1,6 @@
 """Process configuration.
 
-Everything tunable lives here rather than in code, so the Phase 3 tuning pass is
+Everything tunable lives here rather than in code, so retuning the scheduler is
 an env change rather than an edit.
 """
 

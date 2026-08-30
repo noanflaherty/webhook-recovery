@@ -1,5 +1,5 @@
 /**
- * The clock, the phase, and the four knobs a reviewer touches.
+ * The clock, the phase, and the four knobs that drive a run.
  *
  * Pause / resume / speed are all one `PATCH` on the simulation row, because on
  * the backend they are all the same thing: a rewrite of the virtual epoch. The

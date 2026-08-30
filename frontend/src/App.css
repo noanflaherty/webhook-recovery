@@ -1,9 +1,9 @@
 /*
- * Phase 2 owns the instrument, Phase 4 owns the polish.
+ * Layout and tokens for the instrument panel.
  *
- * The token set is the Phase 0 stub's, extended rather than replaced -- the
- * chart colours live in theme.ts because both charts and the consumer cards
- * have to agree on them, and a colour that exists in two places will disagree.
+ * The chart colours live in theme.ts rather than here, because both charts and
+ * the consumer cards have to agree on them, and a colour that exists in two
+ * places will disagree.
  */
 
 :root {

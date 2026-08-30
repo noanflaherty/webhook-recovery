@@ -86,8 +86,8 @@ services:
   conductor:
     <<: *app
     command: ["python", "-m", "app.conductor"]
-    # Two, so leader election is something a reviewer can watch rather than read
-    # about: one holds the advisory lock, the other polls for it every tick.
+    # Two, so leader election is observable rather than notional: one holds the
+    # advisory lock, the other polls for it every tick.
     # `docker compose stop` on the leader promotes the standby immediately --
     # the session ends, so Postgres drops the lock with it.
     scale: 2

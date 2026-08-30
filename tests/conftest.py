@@ -1,12 +1,10 @@
 """Test fixtures.
 
-The session fixture exists now so that Phase 3's fairness tests -- the ones that
-genuinely earn their keep, because a subtly wrong scheduler still draws a
-plausible chart -- are a file to add rather than infrastructure to build under
-time pressure.
-
 Every test runs inside a transaction that is rolled back afterwards, so tests
-share one migrated database and never see each other's rows.
+share one migrated database and never see each other's rows. The fairness tests
+depend on that isolation: a subtly wrong scheduler still draws a plausible
+chart, so they are only worth anything if the rows they assert on are their
+own.
 """
 
 from __future__ import annotations

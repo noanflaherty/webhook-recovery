@@ -116,13 +116,12 @@ async def create_simulation(
 ) -> SimulationRead:
     """Create a simulation and seed its cast, in one transaction.
 
-    Seeding belongs here rather than in a later phase because fan-out reads
-    ``subscription``: a simulation with no consumers accepts events and delivers
-    them to nobody, which is a walking skeleton that cannot walk.
+    Seeding belongs here because fan-out reads ``subscription``: a simulation
+    with no consumers accepts events and delivers them to nobody.
 
     Creating a simulation *is* Reset. Everything is namespaced by
-    ``simulation_id``, so runs persist side by side and a reviewer can leave one
-    up while starting another.
+    ``simulation_id``, so runs persist side by side and one can be left running
+    while another starts.
     """
     settings = get_settings()
     body = body or SimulationCreate()

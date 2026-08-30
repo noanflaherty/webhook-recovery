@@ -56,7 +56,7 @@ async def test_only_one_holder_at_a_time(_engine_installed: None) -> None:
 
 
 async def test_releasing_lets_the_standby_take_over(_engine_installed: None) -> None:
-    """Failover, in the one form the demo can actually show: a graceful stop.
+    """Failover, in the one form this system can trigger: a graceful stop.
 
     An ungraceful kill is the same event from Postgres's point of view -- the
     session ends and the lock goes with it -- which is why there is no lease to

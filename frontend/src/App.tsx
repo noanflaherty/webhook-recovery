@@ -7,10 +7,9 @@
  * **Run identity lives in the URL.** `?sim=<uuid>` names the run, mirrored to
  * localStorage so a refresh resumes it, and `?source=replay` selects the
  * recorded fixtures instead. Keying off an explicit id rather than "whatever
- * the latest run is" is what makes a run a durable artifact: the naive
- * before-picture recorded in this phase stays viewable at its own URL after
- * fair drain lands in the next one, so the comparison survives independently of
- * the toggle working.
+ * the latest run is" is what makes a run a durable artifact: a naive run and a
+ * fair one each keep their own URL, so the two can be compared side by side
+ * rather than only through the toggle.
  */
 import { useCallback, useMemo, useState } from 'react'
 

@@ -21,14 +21,6 @@ proof is a *100% stacked* chart, an equal undercount across three consumers draw
 a chart that looks exactly right. So counters are **derived, not sampled**: two
 grouped queries over ``attempt.started_at`` and ``delivery.completed_at``, which
 are exact and gap-free by construction. Only the three gauges are sampled.
-
-*(Considered and rejected: Redis counters incremented by workers. They attribute
-buckets correctly with no backfill, but they are lossy -- a restart leaves the
-``attempt`` table as the only source of truth, so this query gets written anyway,
-as a second mechanism. It would also spend "Postgres as the only shared state"
-on observability rather than on the fairness window, which is the read-modify-write
-that actually forces the conductor to be a singleton and the place the design
-already earmarks Redis for.)*
 """
 
 from __future__ import annotations
@@ -125,8 +117,8 @@ class MetricsWriter:
         #: Cache only. The authority is ``MAX(bucket_virtual_s)``, because a new
         #: leader has no memory of the old one's progress -- deriving the cursor
         #: from the table is what makes failover backfill the gap instead of
-        #: stranding it. A memory-only cursor leaves a permanent hole in the
-        #: chart at exactly the moment the demo is showing off failover.
+        #: stranding it. A memory-only cursor would leave a permanent hole in
+        #: the chart wherever leadership changed hands.
         self._last_written: dict[uuid.UUID, int] = {}
 
     async def write(
@@ -190,9 +182,8 @@ class MetricsWriter:
                 )
 
         # The full consumer x bucket cross product, so a bucket in which a
-        # consumer did nothing is a zero rather than a hole. A chart that has to
-        # guess whether a missing point means zero or means "no data" will guess
-        # wrong at least once, on camera.
+        # consumer did nothing is a zero rather than a hole, so the chart never
+        # has to guess whether a missing point means zero or means "no data".
         await self._upsert(conn, rows)
         self._last_written[simulation_id] = end
 

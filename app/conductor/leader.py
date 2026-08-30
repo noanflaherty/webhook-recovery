@@ -13,10 +13,7 @@ writing is gone with it. Fencing is therefore automatic rather than something we
 implement: there is no window in which a demoted leader can still write, because
 losing the lock and losing the ability to write are the same event.
 
-The alternative -- a lock table with an expiry the conductor refreshes -- needs a
-fencing token on every write to be safe, because a process that stalls past its
-lease can wake up believing it still holds one. Advisory locks make that class of
-bug unrepresentable rather than merely tested for.
+See ``TECHNICAL_DESIGN.md`` §Key Design Decisions for the alternatives.
 """
 
 from __future__ import annotations

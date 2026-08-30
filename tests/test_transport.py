@@ -102,7 +102,7 @@ async def test_different_deliveries_do_not_share_a_verdict() -> None:
 
 
 async def test_a_healthy_consumer_always_answers_200() -> None:
-    """What the Phase 1 demo runs on: the state machine is complete, the data is calm."""
+    """The default consumer profile: the state machine is complete, the data is calm."""
     transport = SimulatedTransport(RecordingClock())
     for n in range(20):
         result = await transport.attempt(_request(n, attempt_no=1, profile=HEALTHY))

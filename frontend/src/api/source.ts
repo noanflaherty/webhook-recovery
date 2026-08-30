@@ -3,12 +3,11 @@
  *
  * Two implementations: `LiveSource` talks to the api, `ReplaySource` serves the
  * committed fixtures against a locally-driven virtual clock. No component knows
- * which one is behind it, which is what let this phase be built and demoed
- * while the backend it measures was still being written in another worktree.
+ * which one is behind it.
  *
- * It keeps earning that after the split closes: a reviewer who lands on the
- * deployed URL after the platform has spun the stack down still gets the
- * reference run, clearly labelled as recorded rather than live.
+ * That is what keeps the deployed URL useful when the backend is unavailable --
+ * the platform has spun the stack down, say: the reference run still loads,
+ * clearly labelled as recorded rather than live.
  */
 import type {
   ConsumerRead,
