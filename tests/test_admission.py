@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.api.ingest import EventSpec, ingest_events
-from app.conductor.admission import compute_budget, mark_ready, select_candidates
+from app.conductor.admission import Budget, compute_budget, mark_ready, select_candidates
+from app.conductor.metrics import read_gauges
+from app.conductor.policy import load_policies
 from app.conductor.service import _SIM_COLUMNS, Conductor
 from app.core.clock import VIRTUAL_EPOCH_ZERO
 from app.core.enums import DeliveryState, SimStatus
@@ -34,6 +36,32 @@ pytestmark = requires_db
 
 #: Three consumers at concurrency_cap 8.
 TOTAL_CONCURRENCY_CAP = 24
+
+
+async def _admit(
+    connection: AsyncConnection,
+    simulation_id: uuid.UUID,
+    now: datetime,
+    slots: int,
+    *,
+    fair_drain: bool = False,
+) -> list[int]:
+    """What a pass would admit, with the surrounding reads the conductor does.
+
+    Defaults to the fair-drain-off arm, because everything in this file is about
+    the ceilings and the outage gate -- the ceilings bind identically on both
+    arms, and the fair arm gets its own file.
+    """
+    selection = await select_candidates(
+        connection,
+        simulation_id,
+        now,
+        budget=Budget(buffer_slots=slots, rate_slots=slots),
+        gauges=await read_gauges(connection, simulation_id),
+        policies=await load_policies(connection, simulation_id),
+        fair_drain=fair_drain,
+    )
+    return selection.admit
 
 
 async def _backlog(session: AsyncSession, count: int) -> Simulation:
@@ -168,9 +196,7 @@ async def test_the_rate_cap_counts_admitted_but_unattempted_work(
     allowance = int(4.0 * settings.fairness_window_virtual_s)
     assert budget.rate_slots == allowance
 
-    admitted = await mark_ready(
-        connection, await select_candidates(connection, sim.id, now, budget.slots), now
-    )
+    admitted = await mark_ready(connection, await _admit(connection, sim.id, now, budget.slots), now)
     assert admitted == allowance
 
     # Nothing has been attempted, so the window is still empty -- but the budget
@@ -186,7 +212,7 @@ async def test_the_rate_cap_counts_admitted_but_unattempted_work(
 
 
 async def test_candidates_come_back_oldest_first(session: AsyncSession, connection: AsyncConnection) -> None:
-    """FIFO by event time. Phase 2a replaces the ordering, not the contract."""
+    """FIFO by event time -- the fair-drain-off arm, and what fairness is measured against."""
     sim = a_simulation()
     session.add(sim)
     await session.flush()
@@ -205,7 +231,7 @@ async def test_candidates_come_back_oldest_first(session: AsyncSession, connecti
     )
 
     now = VIRTUAL_EPOCH_ZERO + timedelta(seconds=100)
-    chosen = await select_candidates(connection, sim.id, now, limit=6)
+    chosen = await _admit(connection, sim.id, now, 6)
 
     due = (
         await connection.execute(
@@ -233,7 +259,7 @@ async def test_work_that_is_not_due_yet_is_left_alone(
     )
 
     now = VIRTUAL_EPOCH_ZERO + timedelta(seconds=10)
-    assert await select_candidates(connection, sim.id, now, limit=10) == []
+    assert await _admit(connection, sim.id, now, 10) == []
 
 
 async def test_a_drained_run_is_retired(session: AsyncSession, connection: AsyncConnection) -> None:

@@ -23,7 +23,9 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.ingest import EventSpec, ingest_events
-from app.conductor.admission import mark_ready, select_candidates
+from app.conductor.admission import Budget, mark_ready, select_candidates
+from app.conductor.metrics import read_gauges
+from app.conductor.policy import load_policies
 from app.core.clock import VIRTUAL_EPOCH_ZERO
 from app.core.enums import AttemptOutcome, DeliveryState, SimStatus
 from app.core.models import Attempt, Delivery, Simulation
@@ -83,8 +85,16 @@ async def committed(engine: AsyncEngine) -> AsyncIterator[tuple[uuid.UUID, async
         simulation_id = sim.id
 
     async with engine.connect() as conn:
-        candidates = await select_candidates(conn, simulation_id, NOW, limit=100)
-        await mark_ready(conn, candidates, NOW)
+        selection = await select_candidates(
+            conn,
+            simulation_id,
+            NOW,
+            budget=Budget(buffer_slots=100, rate_slots=100),
+            gauges=await read_gauges(conn, simulation_id),
+            policies=await load_policies(conn, simulation_id),
+            fair_drain=False,
+        )
+        await mark_ready(conn, selection.admit, NOW)
         await conn.commit()
 
     yield simulation_id, maker

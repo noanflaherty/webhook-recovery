@@ -205,6 +205,23 @@ A consumer is **dispatchable** when it has work due, free concurrency slots
   rate caps still apply; they are a consumer-protection contract, not a fairness mechanism. This is the naive
   implementation most systems ship, and it is what the toggle compares against — it must be plausible, not a strawman.
 
+Two details the implementation forced, both of which are wrong in the obvious direction:
+
+**Every ceiling subtracts the consumer's outstanding `ready` rows, not just its attempts.** Admitted-but-unattempted work
+has no `attempt` row, so a window query cannot see it — and at a 50ms loop, successive passes would each spend the same
+slice of the same window and every rate cap in the system would be roughly double what it says. It is the same correction
+the global budget makes, applied per consumer, and it is a read-modify-write, which is precisely why two conductors
+running this concurrently would be *wrong* rather than merely wasteful.
+
+**Fairness is per pass, not a deficit carried across passes.** Repaying a consumer that was idle for a whole window would
+hand it the entire window's share the instant it had work again — a burst that spikes the share chart toward 100% for one
+consumer, which is the opposite of the smooth handover being claimed. The sliding window enforces the *caps*; the split
+of each pass's budget is what enforces the *shares*. Concurrency is a gate rather than a per-row reservation for a
+related reason: the ready buffer is deliberately ~1.5 × `Σ concurrency_cap` so workers never starve, so bounding
+admissions by `cap - in_flight - ready` would pin the buffer at exactly `Σ cap` and make the buffer multiplier dead. The
+cost is that the cap binds with about one pass of lag rather than as a hard reservation — invisible at 50ms, and worth
+stating plainly rather than calling it hard.
+
 ### The ready buffer must stay shallow
 
 `ready` is an **admission-control token materialized as a row state**: the conductor has decided this specific delivery
@@ -230,7 +247,22 @@ For each candidate delivery, before marking it `ready`:
 - `coalesce = latest_by_key` and a newer `pending`/`ready` delivery exists for the same
   (consumer, event_type, entity_key) → `superseded`, no attempt.
   *(A `ready` delivery has not been attempted yet, so it remains supersedable — hence the index covers both states.)*
+  "Newer" is ordered on `(created_at, id)`, never `created_at` alone: the producer spreads a tick's events across the
+  virtual window it covers, so two events for one key can share a timestamp, and under a non-total order each would
+  supersede the other and *both* would be dropped — silently, with a healthy-looking chart.
 - Otherwise → `ready`.
+
+Only `pending` candidates are evaluated. A delivery that is already `ready` when a newer sibling arrives is attempted
+anyway — the index spans both states for the *lookup* side, not to re-scan the buffer. That is a consequence of the
+shallow ready buffer rather than a gap: at ~1.5 × `Σ concurrency_cap` the buffer holds well under a virtual second of
+work, which is the third argument in [The ready buffer must stay shallow](#the-ready-buffer-must-stay-shallow) showing
+up in practice.
+
+**Policy drops are not rationed by fairness.** Fairness rations *attempts*, and an `expired` or `superseded` delivery
+never becomes one. So a pass deliberately over-fetches candidates, evaluates policy across all of them, drops every one
+the policy condemns, and only then rations the survivors. A loop that rationed candidates instead would leave a consumer
+whose backlog is mostly coalescable — Bolt's, during recovery — unable to fill its share, looking starved by a scheduler
+that was working correctly.
 
 Retry: exponential backoff (`base * 2^n`, capped) with a max attempt count. Global for the demo; per-consumer retry
 policy is documented as future work.
@@ -439,9 +471,16 @@ Single page:
 
 1. **Control bar** — Play/Pause, speed, Fair drain toggle, Reset, phase indicator + virtual clock.
 2. **Backlog over time** — one line per consumer. The shape of recovery.
-3. **Attempts share over time** — 100% stacked bar per virtual-second bucket. The fairness proof: with fair drain on and
-   equal weights, segments are equal *whenever all three have backlog*. Once Clover drains, its segment correctly goes to
-   zero — the legend must say so, or it reads as unfairness.
+3. **Attempts share over time** — 100% stacked areas over 5-virtual-second windows. The fairness proof: with fair drain
+   on and equal weights, segments are equal *whenever all three have backlog*. Once Clover drains, its segment correctly
+   goes to zero — the legend must say so, or it reads as unfairness. A vertical marker records each point at which
+   `fair_drain_enabled` was toggled, so the before/after is one image rather than a claim about what happened off-screen.
+
+   *(Built as 5s windows rather than the per-virtual-second bars originally specified here: over a 900-second run a
+   per-second bar is sub-pixel, and 5s is `fairness_window_virtual_s` — the window the scheduler's own rate term averages
+   over — so the display granularity matches the mechanism's rather than being chosen for looks. Shares are also computed
+   before rendering rather than via a stacked `expand` offset, because the row total is legitimately zero for the whole
+   outage and dividing by it draws nothing, which is indistinguishable from a consumer genuinely getting no share.)*
 4. **Consumer cards** — backlog, in-flight / cap, delivered / expired / superseded / failed, and **time to catch up**.
 5. **Process strip** — workers (heartbeat, in-flight count) and conductors (leader marked). Read-only; it exists so the
    multi-process architecture is visible rather than claimed.

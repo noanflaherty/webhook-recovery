@@ -1,10 +1,11 @@
 """One worker iteration: claim, deliver, complete.
 
 Workers are the data plane and contain **no policy logic** -- they execute
-decisions the conductor already made. (One exception is designed for and lands
-in Phase 2: a final ``max_staleness`` re-check immediately before attempting,
-since an event can go stale in the ready-to-attempt gap. It needs
-``delivery_policy``, which nothing reads yet.)
+decisions the conductor already made. There is exactly one exception, in
+:func:`app.worker.claim.claim_batch`: a final ``max_staleness`` re-check
+immediately before attempting, because an event can go stale in the gap between
+being admitted and being reached. It is one comparison, sharing the conductor's
+own predicate. Coalescing stays conductor-only because it needs a query.
 
 Nothing here consults the process registry, or knows how many other workers
 exist. ``SKIP LOCKED`` is the entire coordination mechanism: N workers, disjoint

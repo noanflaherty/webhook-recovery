@@ -35,11 +35,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Row, bindparam, insert, select, update
+from sqlalchemy import Row, and_, bindparam, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from app.conductor.policy import stale_by, stale_reason
 from app.core.enums import AttemptOutcome, DeliveryState
-from app.core.models import Attempt, Consumer, Delivery
+from app.core.models import Attempt, Consumer, Delivery, DeliveryPolicy
 from app.core.settings import get_settings
 from app.worker.transport import AttemptRequest, AttemptResult, ConsumerProfile
 
@@ -82,12 +83,24 @@ async def claim_batch(
                 Delivery.event_type,
                 Delivery.entity_key,
                 Delivery.attempt_count,
+                Delivery.created_at,
                 Consumer.sim_latency_s,
                 Consumer.sim_jitter_s,
                 Consumer.sim_failure_rate,
                 Consumer.sim_down,
+                DeliveryPolicy.max_staleness_s,
             )
             .join(Consumer, Consumer.id == Delivery.consumer_id)
+            # The one policy column a worker reads. Outer, because an absent
+            # policy row means "deliver everything" and must not drop the
+            # delivery from the claim.
+            .outerjoin(
+                DeliveryPolicy,
+                and_(
+                    DeliveryPolicy.consumer_id == Delivery.consumer_id,
+                    DeliveryPolicy.event_type == Delivery.event_type,
+                ),
+            )
             .where(
                 Delivery.simulation_id == simulation_id,
                 Delivery.state == DeliveryState.READY.value,
@@ -98,6 +111,11 @@ async def claim_batch(
         )
     ).all()
 
+    if not rows:
+        return []
+
+    rows, expired = _split_stale(rows, now)
+    await _expire(conn, expired, now)
     if not rows:
         return []
 
@@ -138,6 +156,57 @@ async def claim_batch(
         )
         for row in rows
     ]
+
+
+def _split_stale(rows: Sequence[Row[Any]], now: datetime) -> tuple[list[Row[Any]], list[dict[str, object]]]:
+    """Partition claimed rows into ones still worth sending and ones gone stale.
+
+    The one exception to "workers contain no policy logic", and it exists
+    because a delivery can go stale in the gap between the conductor admitting
+    it and a worker reaching it. The conductor cannot close that gap from its
+    side -- it is the worker's own queue latency -- so the check is repeated
+    here immediately before the attempt. It is one comparison, sharing the
+    conductor's predicate. Coalescing is not re-checked, because that needs a
+    query, and the shallow ready buffer is what keeps the window small enough
+    for that to be the right trade.
+    """
+    live: list[Row[Any]] = []
+    expired: list[dict[str, object]] = []
+    for row in rows:
+        overage = stale_by(now, row.created_at, row.max_staleness_s)
+        if overage is None:
+            live.append(row)
+        else:
+            expired.append(
+                {
+                    "b_delivery_id": row.id,
+                    "b_terminal_reason": stale_reason(overage, row.max_staleness_s),
+                }
+            )
+    return live, expired
+
+
+async def _expire(conn: AsyncConnection, expired: list[dict[str, object]], now: datetime) -> None:
+    """Terminate the stale ones, *before* anything is marked in flight.
+
+    Ordering matters more than it looks. An expiry is not an attempt, and these
+    rows must not get an ``attempt`` row -- writing one would inflate that
+    consumer's usage inside the very sliding window fairness is computed from,
+    so a consumer whose events keep going stale would be charged for capacity it
+    never used and then starved for it.
+    """
+    if not expired:
+        return
+    await conn.execute(
+        update(Delivery)
+        .where(Delivery.id == bindparam("b_delivery_id"))
+        .values(
+            state=DeliveryState.EXPIRED.value,
+            completed_at=now,
+            terminal_reason=bindparam("b_terminal_reason"),
+        ),
+        expired,
+    )
 
 
 async def _insert_attempts(

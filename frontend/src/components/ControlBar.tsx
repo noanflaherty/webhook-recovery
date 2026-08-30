@@ -65,12 +65,18 @@ export function ControlBar({
         </label>
 
         {/*
-          Wired to the real field, and honestly labelled as doing nothing yet.
-          Phase 3 replaces `select_candidates` in the conductor; this toggle is
-          already the switch that will select between the two arms, so the seam
-          gets exercised now rather than being written on the day it has to work.
+          The comparison the whole submission rests on, and it is live: the
+          conductor re-reads `fair_drain_enabled` every pass, so flipping this
+          mid-run changes the slope of the attempt-share chart within a tick
+          rather than needing a restart. `ShareChart` marks where it happened.
+
+          Off is not a strawman -- it is global FIFO under one shared pool with
+          per-consumer rate caps still honoured, which is what most systems ship.
         */}
-        <label className="knob" title="Phase 3 wires this to the conductor's admission policy.">
+        <label
+          className="knob"
+          title="On: weighted round-robin across consumers. Off: global FIFO, the naive arm."
+        >
           <input
             type="checkbox"
             checked={simulation.fair_drain_enabled}
@@ -78,7 +84,7 @@ export function ControlBar({
             disabled={busy || replay}
           />
           <span>fair drain</span>
-          <span className="chip muted">{replay ? 'recorded' : 'inert until Phase 3'}</span>
+          {replay && <span className="chip muted">recorded</span>}
         </label>
 
         <button type="button" onClick={onReset} disabled={busy}>

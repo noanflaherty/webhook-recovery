@@ -11,7 +11,7 @@ to agree about. ``is_outage`` is the conductor's admission gate and
 producer's event mix -- is a constants table with one function that writes it.
 The phase plan put seeding in Phase 3, but fan-out reads ``subscription``: with
 no rows the walking skeleton produces nothing and cannot walk. Policies come
-along for free and sit unread until Phase 2 evaluates them.
+along for free, and Phase 3's conductor reads them at dispatch time.
 
 Rates are per *virtual* second and are back-derived from the committed frontend
 fixtures, so the charts a reviewer sees against real data have the same shape as

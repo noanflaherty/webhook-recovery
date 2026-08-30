@@ -37,16 +37,23 @@ import {
   formatVirtual,
 } from '../scenario'
 import { colorByName } from '../theme'
+import type { FairDrainFlip } from '../hooks/useRun'
 import { toShareWindows, type ConsumerRef } from '../transform/series'
 
 interface Props {
   buckets: MetricsBucket[]
   consumers: ConsumerRef[]
+  /** Where the fair-drain toggle moved, and which way. See `useRun`. */
+  fairDrainFlips?: FairDrainFlip[]
 }
 
 const percent = (value: number) => `${Math.round(value * 100)}%`
 
-export const ShareChart = memo(function ShareChart({ buckets, consumers }: Props) {
+export const ShareChart = memo(function ShareChart({
+  buckets,
+  consumers,
+  fairDrainFlips = [],
+}: Props) {
   const data = useMemo(() => toShareWindows(buckets, consumers), [buckets, consumers])
   const equalShare = consumers.length > 0 ? 1 / consumers.length : null
 
@@ -132,6 +139,32 @@ export const ShareChart = memo(function ShareChart({ buckets, consumers }: Props
               }}
             />
           )}
+          {/*
+            Where the scheduler changed underneath the data. The chart is the
+            argument, and an argument that needs narrating over is weaker than
+            one you can point at: with the marker, the re-balance is a single
+            image rather than a claim about what happened off-screen.
+
+            Each marker names the state it moved *into*, and is coloured to
+            match. "toggled" alone would say that something changed without
+            saying which way -- and on a run with more than one flip, that
+            leaves the reader to infer the direction by alternating from a
+            starting state the chart never showed them.
+          */}
+          {fairDrainFlips.map((flip) => (
+            <ReferenceLine
+              key={`${flip.t}:${flip.enabled}`}
+              x={flip.t}
+              stroke={flip.enabled ? 'var(--ok)' : 'var(--warn)'}
+              strokeDasharray="3 3"
+              label={{
+                value: flip.enabled ? 'fair drain on' : 'fair drain off',
+                position: 'insideTopLeft',
+                fill: flip.enabled ? 'var(--ok)' : 'var(--warn)',
+                fontSize: 10,
+              }}
+            />
+          ))}
           {consumers.map((consumer) => (
             <Area
               key={consumer.id}

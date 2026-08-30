@@ -10,24 +10,32 @@ Rationale: [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md)
 
 ---
 
-## Status: Phase 1 — the walking skeleton
+## Status: Phase 3 — the two claims
 
 **Deployed:** https://api-production-7c78a.up.railway.app
 
-Events now flow end to end — **producer → ledger → fan-out → admission → worker → `delivered`** — across
-five processes coordinating only through Postgres, with `pg_try_advisory_lock` leader election. Create a
-simulation and its backlog climbs through the scripted outage and drains after it, on real data.
+Events flow end to end — **producer → ledger → fan-out → admission → worker → `delivered`** — across five
+processes coordinating only through Postgres, with `pg_try_advisory_lock` leader election, and the whole
+run is drawn live in the browser.
 
-The scheduling is deliberately naive: **global FIFO under one rate budget, no fairness and no policy.**
-That is not throwaway code — it is the `fair_drain = OFF` arm, which Phase 2 needs anyway as the thing
-the toggle is measured against.
+Both claims are now behaviour rather than seams:
+
+- **Fair backlog burn-down.** The conductor admits by weighted round-robin across dispatchable
+  consumers, work-conserving, with `concurrency_cap` and `max_attempts_per_s` enforced from the same
+  sliding window over `attempt`. `fair_drain_enabled` is re-read every pass, so flipping it mid-run
+  changes the slope of the attempt-share chart within a tick.
+- **Consumer-defined policy.** `max_staleness_s` → `expired` and `coalesce: latest_by_key` →
+  `superseded`, evaluated at dispatch time — because whether an event is stale depends on when the
+  pipeline recovers, and whether it has been superseded depends on what queued up behind it. Neither is
+  knowable at ingest.
 
 | | |
 |---|---|
-| **Built** | ingest + fan-out, the producer, admission control with the outage gate, derived metric buckets, leader election, `SKIP LOCKED` claim, the full attempt state machine (deliver / retry / fail), consumer seeding |
-| **Deliberately absent** | weights and per-consumer shares, `max_staleness` → `expired`, coalescing → `superseded`, the fair-drain toggle, charts, lease reaping |
+| **Built** | ingest + fan-out, the producer, weighted fair admission + the naive FIFO arm behind the toggle, both policy mechanisms, the outage gate, derived metric buckets, leader election, `SKIP LOCKED` claim, the full attempt state machine, the UI |
+| **Deliberately absent** | lease reaping (see [Scoped out](#scoped-out)), per-consumer retry policy, `batch_by_key` coalescing |
 
-One run, backlog (`b`) and delivered (`d`) per consumer, at 20× — about 60 real seconds end to end:
+One **naive** run — `fair_drain = OFF`, the arm the toggle is measured against — backlog (`b`) and
+delivered (`d`) per consumer, at 20×, about 60 real seconds end to end:
 
 ```
 t=  50s normal     Acme b=14   d=287   Bolt b=14   d=287   Clover b=2   d=39
@@ -46,8 +54,8 @@ Deliveries stop entirely between 2:00 and 7:00 while events keep landing in the 
 producer stops at 900 virtual seconds; the backlog reaches a stable zero and the run retires itself.
 
 Acme and Bolt track each other exactly, because they subscribe to the same four event types and nothing
-yet distinguishes them. Phase 2's policies are what pull those two lines apart — which is precisely why
-the baseline is worth running first.
+yet distinguishes them under the naive arm. Bolt's policies are what pull those two lines apart — which
+is precisely why this baseline is worth keeping.
 
 ## Run it
 
@@ -119,7 +127,7 @@ chart that is smooth, plausible and wrong.
   ```
 
 The clock is the check worth reading carefully. It is the only Phase 0 output that three separate
-processes have to agree on, and a wrong answer there is invisible until Phase 2, where it presents as a
+processes have to agree on, and a wrong answer there is invisible until Phase 3, where it presents as a
 *fairness* bug rather than a clock bug.
 
 [`scripts/check_clock.py`](scripts/check_clock.py) is deliberately **latency-aware**. The naive form of
@@ -236,7 +244,7 @@ the shape genuinely changed.
   scheduler bug rather than a tuning problem. Worth knowing which knob it is.
 - **Consumer seeding moved from Phase 3 to here.** Not a choice — fan-out reads `subscription`, so a
   simulation with no consumers accepts events and delivers them to nobody. Policies came along for free
-  and sit unread until Phase 2 evaluates them.
+  and are read at dispatch time by the conductor.
 - **Finished runs retire themselves.** A conductor pass covers *every* running simulation, so one that
   nobody retires goes on costing throughput forever — and the cost lands on whichever run a reviewer is
   currently watching. Every visit to the deployment leaves another one behind, so it compounds. Also
@@ -319,7 +327,7 @@ of being platform-independent rather than a Railway feature.
 
 ### What deploying actually caught
 
-None of these would have been distinguishable from a *business logic* bug had they surfaced in Phase 2.
+None of these would have been distinguishable from a *business logic* bug had they surfaced in Phase 3.
 This is the entire argument for deploying before there is anything interesting to deploy.
 
 **Phase 1: abandoned simulations starve the live one.** Locally there is one simulation and everything
@@ -357,7 +365,7 @@ request and push, the fourth only on `main`.
 
 | Job | What it protects |
 |---|---|
-| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture Phase 2's scheduler tests are built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the frozen contract cannot drift out from under the frontend track. |
+| **backend** | ruff, `mypy --strict`, and pytest against a **real Postgres service** — without one, `tests/test_db_fixture.py` skips itself and CI silently stops covering the transactional fixture Phase 3's scheduler tests are built on. Also `alembic check`, so a model edit without a migration fails here rather than at the next deploy, and a fixture-staleness check, so the frozen contract cannot drift out from under the frontend track. |
 | **frontend** | `tsc -b && vite build` |
 | **image** | Builds the Dockerfile, then **boots it**: starts Postgres, runs the real `scripts/start-api.sh`, waits for `/api/health`, and checks a worker registers. A green `docker build` only says the image compiles. This job exists because the Dockerfile is what actually ships and it has broken twice in ways nothing else caught — a missing `README.md` that hatchling needed, and a builder that silently was not the Dockerfile at all. |
 | **deploy** | `main` only, gated on the other three. Deploys api → conductor → worker via [`scripts/deploy_railway.sh`](scripts/deploy_railway.sh), then runs the same `verify.sh` against the public URL. |
@@ -386,7 +394,8 @@ CD to Railway's own integration and out of Actions.
 
 ## Next
 
-**Phase 2** — the two claims. Fairness (weighted shares, concurrency caps and `max_attempts_per_s` from
-the same sliding window, plus the `fair_drain_enabled` toggle) and policy (`max_staleness` → `expired`,
-`coalesce: latest_by_key` → `superseded`). Both slot into seams this phase left open:
-`select_candidates()` for fairness, and a policy check between it and `mark_ready()`.
+**Phase 4** — polish, docs and the walkthrough video. A tuning pass on the scenario so the demo reads on
+first watch, the README's "what am I looking at" for a reviewer landing cold, `DESIGN_RATIONALE.md` on
+the coalescing tradeoff and what was scoped out, and ~5 minutes of video. Thirty seconds of that is worth
+spending on what was deliberately *not* built — lease reclamation is designed and documented but absent,
+and saying so is stronger than hoping nobody asks.
